@@ -6,7 +6,11 @@ const path = require('path');
 console.log('🔧 Starting duplicate sub-account cleanup...\n');
 
 // Open database
-const db = new Database(path.join(__dirname, 'budget.db'));
+// Use DATA_DIR environment variable or default to /app/data in production, current directory in development
+const dataDir = process.env.DATA_DIR || (process.env.NODE_ENV === 'production' ? '/app/data' : __dirname);
+const dbPath = path.join(dataDir, 'budget.db');
+console.log(`Using database at: ${dbPath}\n`);
+const db = new Database(dbPath);
 
 try {
   // Get all budget records

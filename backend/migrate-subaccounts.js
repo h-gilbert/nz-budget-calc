@@ -15,7 +15,11 @@ const Database = require('better-sqlite3');
 const path = require('path');
 const readline = require('readline');
 
-const db = new Database(path.join(__dirname, 'budget.db'));
+// Use DATA_DIR environment variable or default to /app/data in production, current directory in development
+const dataDir = process.env.DATA_DIR || (process.env.NODE_ENV === 'production' ? '/app/data' : __dirname);
+const dbPath = path.join(dataDir, 'budget.db');
+console.log(`Using database at: ${dbPath}\n`);
+const db = new Database(dbPath);
 db.pragma('foreign_keys = ON');
 
 const rl = readline.createInterface({
