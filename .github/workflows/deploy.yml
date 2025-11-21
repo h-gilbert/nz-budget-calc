@@ -80,7 +80,7 @@ jobs:
         sleep 10
 
         # Check backend health
-        if curl -f http://192.168.1.2:3200/api/verify > /dev/null 2>&1; then
+        if curl -f http://192.168.1.2:3200/health > /dev/null 2>&1; then
           echo "✅ Backend is healthy"
         else
           echo "⚠️  Backend health check failed - showing logs..."
