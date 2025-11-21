@@ -13,6 +13,17 @@ const JWT_SECRET = process.env.JWT_SECRET || 'budget-calculator-secret-key';
 app.use(cors());
 app.use(bodyParser.json());
 
+// Health check endpoint (no authentication required)
+app.get('/health', (req, res) => {
+    res.status(200).json({
+        status: 'ok',
+        version: '1.0.1',
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime(),
+        message: 'GitHub Actions deployment successful! 🚀'
+    });
+});
+
 // Auth middleware
 function authenticateToken(req, res, next) {
     const authHeader = req.headers['authorization'];

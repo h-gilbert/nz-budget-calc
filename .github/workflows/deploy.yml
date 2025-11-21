@@ -1,0 +1,124 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:  # Allow manual triggering
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: frontend/package-lock.json
+
+    - name: Build Frontend
+      run: |
+        cd frontend
+        npm ci
+        npm run build
+        ls -la dist  # Verify build output
+
+    - name: Setup SSH
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ secrets.SERVER_SSH_KEY }}" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts
+
+    - name: Deploy to Server
+      env:
+        SERVER_USER: ${{ secrets.SERVER_USER }}
+        SERVER_HOST: ${{ secrets.SERVER_HOST }}
+        JWT_SECRET: ${{ secrets.JWT_SECRET }}
+      run: |
+        echo "🚀 Starting deployment to $SERVER_HOST..."
+
+        # Copy files to server
+        echo "📦 Copying files to server..."
+        rsync -avz --delete \
+          --exclude 'node_modules' \
+          --exclude '.git' \
+          --exclude '.github' \
+          --exclude 'frontend/node_modules' \
+          --exclude 'backend/node_modules' \
+          --exclude '*.log' \
+          --exclude '.env' \
+          ./ ${SERVER_USER}@${SERVER_HOST}:/mnt/user/appdata/nz-budget-calculator/
+
+        # Deploy on server
+        echo "🔧 Building and deploying on server..."
+        ssh ${SERVER_USER}@${SERVER_HOST} << 'ENDSSH'
+        set -e
+        cd /mnt/user/appdata/nz-budget-calculator
+
+        # Create .env if it doesn't exist
+        if [ ! -f .env ]; then
+          echo "Creating .env file..."
+          echo "JWT_SECRET=${JWT_SECRET}" > .env
+          echo "NODE_ENV=production" >> .env
+          echo "PORT=3200" >> .env
+          echo "FRONTEND_URL=https://budget.hamishgilbert.com" >> .env
+        fi
+
+        # Build and restart backend
+        echo "🐳 Building Docker image..."
+        docker-compose -f docker-compose.production.yml build --no-cache
+
+        echo "🔄 Restarting backend container..."
+        docker-compose -f docker-compose.production.yml down
+        docker-compose -f docker-compose.production.yml up -d
+
+        # Wait for backend to be healthy
+        echo "⏳ Waiting for backend to be healthy..."
+        sleep 10
+
+        # Check backend health
+        if curl -f http://192.168.1.2:3200/api/verify > /dev/null 2>&1; then
+          echo "✅ Backend is healthy"
+        else
+          echo "⚠️  Backend health check failed - showing logs..."
+          docker logs --tail 30 budget-backend
+          exit 1
+        fi
+
+        # Reload nginx
+        echo "🔄 Reloading nginx..."
+        docker exec multi-site-nginx nginx -t && docker exec multi-site-nginx nginx -s reload || echo "⚠️  nginx reload failed"
+
+        echo "✅ Deployment complete!"
+        ENDSSH
+
+    - name: Verify Deployment
+      run: |
+        echo "🔍 Verifying deployment..."
+        sleep 5
+        ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'ENDSSH'
+        # Show container status
+        echo "📊 Container Status:"
+        docker ps | grep budget
+
+        # Show recent logs
+        echo ""
+        echo "📝 Recent Logs:"
+        docker logs --tail 20 budget-backend
+        ENDSSH
+
+        echo ""
+        echo "✅ Deployment verified!"
+        echo "🌐 Access your app at: https://budget.hamishgilbert.com"
+
+    - name: Notify on Failure
+      if: failure()
+      run: |
+        echo "❌ Deployment failed! Check the logs above for details."
+        ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} \
+          "docker logs --tail 50 budget-backend" || true

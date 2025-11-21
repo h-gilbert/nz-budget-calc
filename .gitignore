@@ -33,3 +33,25 @@ Thumbs.db
 
 # Claude
 .claude/
+
+# SSH Keys (NEVER commit these!)
+*.pem
+id_rsa
+id_rsa.pub
+id_ed25519
+id_ed25519.pub
+github_actions_*
+
+# Docker
+docker-compose.override.yml
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Backup files
+*.backup
+*.bak

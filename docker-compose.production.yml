@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: budget-backend
+    restart: unless-stopped
+    ports:
+      - "3200:3200"
+    volumes:
+      - budget-data:/app/data
+      - ./logs:/app/logs
+    environment:
+      NODE_ENV: production
+      PORT: 3200
+      JWT_SECRET: ${JWT_SECRET}
+      FRONTEND_URL: https://budget.hamishgilbert.com
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3200/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+
+volumes:
+  budget-data:
+    driver: local

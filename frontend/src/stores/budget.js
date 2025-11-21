@@ -477,9 +477,18 @@ export const useBudgetStore = defineStore('budget', () => {
         const isExpenseAcc = account.isExpenseAccount === true || account.isExpenseAccount === 1
         const startingDate = isExpenseAcc ? getNextMonday() : (account.startingBalanceDate || null)
 
-        // Transform sub-accounts recursively
+        // Transform sub-accounts recursively and deduplicate by ID
         const subAccounts = account.sub_accounts || []
-        const transformedSubAccounts = subAccounts.map((subAcc, subIndex) => transformAccount(subAcc, subIndex))
+        const seenIds = new Set()
+        const deduplicatedSubAccounts = subAccounts.filter(subAcc => {
+          if (seenIds.has(subAcc.id)) {
+            console.warn(`Duplicate sub-account detected and removed: ${subAcc.id} - ${subAcc.name}`)
+            return false
+          }
+          seenIds.add(subAcc.id)
+          return true
+        })
+        const transformedSubAccounts = deduplicatedSubAccounts.map((subAcc, subIndex) => transformAccount(subAcc, subIndex))
 
         const transformed = {
           id: account.id || `account-${Date.now()}-${index}`,
@@ -891,6 +900,25 @@ export const useBudgetStore = defineStore('budget', () => {
       }
     })
 
+    // Transform accounts - deduplicate sub_accounts by ID to prevent duplicates
+    const transformedAccounts = accounts.value.map(account => {
+      const accountCopy = { ...account }
+
+      // Deduplicate sub_accounts by ID
+      if (accountCopy.sub_accounts && accountCopy.sub_accounts.length > 0) {
+        const seenIds = new Set()
+        accountCopy.sub_accounts = accountCopy.sub_accounts.filter(subAcc => {
+          if (seenIds.has(subAcc.id)) {
+            return false // Skip duplicate
+          }
+          seenIds.add(subAcc.id)
+          return true
+        })
+      }
+
+      return accountCopy
+    })
+
     // Get all current budget data for saving in backend format
     return {
       budgetId: budgetId.value, // Include ID for updates (backend expects 'budgetId', not 'id')
@@ -909,7 +937,7 @@ export const useBudgetStore = defineStore('budget', () => {
       studentLoan: studentLoan.value,
       ietcEligible: ietcEligible.value,
       expenses: transformedExpenses,
-      accounts: accounts.value,
+      accounts: transformedAccounts,
       savingsTarget: savingsTarget.value,
       savingsDeadline: savingsDeadline.value,
       investSavings: investSavings.value,
