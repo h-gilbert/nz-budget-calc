@@ -814,11 +814,10 @@ export const useBudgetStore = defineStore('budget', () => {
           const catchUpExtra = Math.min(maxDeficit, maxCatchUpExtra)
           transferAmount = equilibriumTransfer + catchUpExtra
         } else {
-          // No deficit in next 13 weeks, we can just transfer equilibrium
-          transferAmount = equilibriumTransfer
-
-          // Check if we've truly reached equilibrium (check all remaining weeks)
+          // No deficit in next 13 weeks, check all remaining weeks for true stability
+          // Also track the maximum deficit across ALL remaining weeks
           let isStable = true
+          let maxFullDeficit = 0
           testBalance = balanceAfterExpenses + equilibriumTransfer
 
           for (let i = weekIndex + 1; i < weeklyRequirements.length; i++) {
@@ -833,7 +832,11 @@ export const useBudgetStore = defineStore('budget', () => {
 
             if (testBalance < minRequiredBalance) {
               isStable = false
-              break
+              // Track the worst deficit across all remaining weeks
+              const deficit = minRequiredBalance - testBalance
+              if (deficit > maxFullDeficit) {
+                maxFullDeficit = deficit
+              }
             }
             testBalance += equilibriumTransfer
           }
@@ -841,6 +844,11 @@ export const useBudgetStore = defineStore('budget', () => {
           if (isStable) {
             equilibriumReached = true
             equilibriumWeek = weekIndex + 1
+            transferAmount = equilibriumTransfer
+          } else {
+            // Not yet stable - proactively add catch-up to reach equilibrium faster
+            const catchUpExtra = Math.min(maxFullDeficit, maxCatchUpExtra)
+            transferAmount = equilibriumTransfer + catchUpExtra
           }
         }
 
