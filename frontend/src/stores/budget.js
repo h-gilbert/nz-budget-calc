@@ -785,71 +785,40 @@ export const useBudgetStore = defineStore('budget', () => {
       let transferAmount = 0
 
       if (!equilibriumReached) {
-        // Find the maximum deficit in the next 13 weeks if we just transfer equilibrium
+        // Simulate all remaining weeks with equilibrium-only transfers
+        // to find the maximum deficit we'd face
         let maxDeficit = 0
-        let testBalance = balanceAfterExpenses
+        let testBalance = balanceAfterExpenses + equilibriumTransfer
 
-        for (let i = weekIndex; i < Math.min(weekIndex + 13, weeklyRequirements.length); i++) {
+        for (let i = weekIndex + 1; i < weeklyRequirements.length; i++) {
           const futureWeek = weeklyRequirements[i]
-          // Add equilibrium transfer at start of week
-          testBalance += equilibriumTransfer
-          // Subtract expenses for that week
           testBalance -= futureWeek.totalExpensesDue
 
-          // If week-ahead buffer is enabled, check if balance falls below next week's expenses
-          // Otherwise, just check if balance goes negative
+          // Check minimum required balance (0 for normal, next week's expenses for week-ahead)
           let minRequiredBalance = 0
           if (isWeekAhead && i + 1 < weeklyRequirements.length) {
             minRequiredBalance = weeklyRequirements[i + 1].totalExpensesDue
           }
 
-          // Track the worst deficit
-          if (testBalance < minRequiredBalance && Math.abs(testBalance - minRequiredBalance) > maxDeficit) {
-            maxDeficit = Math.abs(testBalance - minRequiredBalance)
+          // Track the worst deficit across all remaining weeks
+          if (testBalance < minRequiredBalance) {
+            const deficit = minRequiredBalance - testBalance
+            if (deficit > maxDeficit) {
+              maxDeficit = deficit
+            }
           }
+          testBalance += equilibriumTransfer
         }
 
         if (maxDeficit > 0) {
-          // We need to catch up - transfer equilibrium + the deficit (capped to max catch-up extra)
+          // Need to catch up - transfer equilibrium + deficit (capped to max catch-up extra)
           const catchUpExtra = Math.min(maxDeficit, maxCatchUpExtra)
           transferAmount = equilibriumTransfer + catchUpExtra
         } else {
-          // No deficit in next 13 weeks, check all remaining weeks for true stability
-          // Also track the maximum deficit across ALL remaining weeks
-          let isStable = true
-          let maxFullDeficit = 0
-          testBalance = balanceAfterExpenses + equilibriumTransfer
-
-          for (let i = weekIndex + 1; i < weeklyRequirements.length; i++) {
-            const futureWeek = weeklyRequirements[i]
-            testBalance -= futureWeek.totalExpensesDue
-
-            // Check minimum required balance (0 for normal, next week's expenses for week-ahead)
-            let minRequiredBalance = 0
-            if (isWeekAhead && i + 1 < weeklyRequirements.length) {
-              minRequiredBalance = weeklyRequirements[i + 1].totalExpensesDue
-            }
-
-            if (testBalance < minRequiredBalance) {
-              isStable = false
-              // Track the worst deficit across all remaining weeks
-              const deficit = minRequiredBalance - testBalance
-              if (deficit > maxFullDeficit) {
-                maxFullDeficit = deficit
-              }
-            }
-            testBalance += equilibriumTransfer
-          }
-
-          if (isStable) {
-            equilibriumReached = true
-            equilibriumWeek = weekIndex + 1
-            transferAmount = equilibriumTransfer
-          } else {
-            // Not yet stable - proactively add catch-up to reach equilibrium faster
-            const catchUpExtra = Math.min(maxFullDeficit, maxCatchUpExtra)
-            transferAmount = equilibriumTransfer + catchUpExtra
-          }
+          // No deficit - equilibrium reached
+          equilibriumReached = true
+          equilibriumWeek = weekIndex + 1
+          transferAmount = equilibriumTransfer
         }
 
         // Final safety cap at max transfer
