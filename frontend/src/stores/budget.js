@@ -779,6 +779,7 @@ export const useBudgetStore = defineStore('budget', () => {
           frequency,
           date: expense.date || null,
           groupId: expense.groupId || null,
+          autoPayEnabled: expense.autoPayEnabled !== false,
           sub_account: {
             balance: parseFloat(subAccount.balance) || 0
           }
@@ -1236,6 +1237,7 @@ export const useBudgetStore = defineStore('budget', () => {
         dayOfWeek: null,
         dayOfMonth: null,
         groupId: expense.groupId || null,
+        autoPayEnabled: expense.autoPayEnabled !== false,
         sub_account: {
           balance: expense.sub_account?.balance || 0
         }
