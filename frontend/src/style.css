@@ -261,6 +261,17 @@ a:hover {
   border-color: var(--border-medium);
 }
 
+.btn-outline {
+  background: transparent;
+  color: var(--primary-teal);
+  border: 1px solid var(--primary-teal);
+}
+
+.btn-outline:hover:not(:disabled) {
+  background: rgba(20, 184, 166, 0.1);
+  border-color: var(--primary-teal);
+}
+
 .btn-danger {
   background: var(--danger-red);
   color: white;

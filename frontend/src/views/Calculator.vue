@@ -122,14 +122,33 @@
                   <span>Have a student loan</span>
                 </label>
 
-                <label class="checkbox-label">
-                  <input
-                    id="ietc"
-                    v-model="budgetStore.ietcEligible"
-                    type="checkbox"
-                  />
-                  <span>Eligible for IETC</span>
-                </label>
+                <div class="checkbox-with-tooltip">
+                  <label class="checkbox-label">
+                    <input
+                      id="ietc"
+                      v-model="budgetStore.ietcEligible"
+                      type="checkbox"
+                    />
+                    <span>Eligible for IETC</span>
+                  </label>
+                  <div class="tooltip-trigger" tabindex="0">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <circle cx="12" cy="12" r="10"></circle>
+                      <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>
+                      <line x1="12" y1="17" x2="12.01" y2="17"></line>
+                    </svg>
+                    <div class="tooltip-content">
+                      <strong>Independent Earner Tax Credit</strong>
+                      <p>Worth up to $520/year ($10/week) for incomes between $24,000 - $70,000.</p>
+                      <p v-if="budgetStore.estimatedAnnualIncome > 0" class="income-status">
+                        Your estimated income: ${{ budgetStore.estimatedAnnualIncome.toLocaleString('en-NZ', { maximumFractionDigits: 0 }) }}/year
+                        <span v-if="budgetStore.isIetcIncomeEligible" class="eligible">- Eligible</span>
+                        <span v-else class="not-eligible">- Outside range</span>
+                      </p>
+                      <p class="tooltip-note">You cannot claim if you receive Working for Families, income-tested benefits, NZ Super, or Veteran's Pension.</p>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -157,9 +176,14 @@
           <div v-show="expandedSections.expenses" class="section-content">
             <div class="section-actions">
               <p class="help-text">Track your regular expenses in any period - we'll calculate the weekly total</p>
-              <Button variant="secondary" size="sm" @click="handleAddExpense">
-                Add Expense
-              </Button>
+              <div class="action-buttons">
+                <Button variant="outline" size="sm" @click="showGroupManager = true">
+                  Manage Groups
+                </Button>
+                <Button variant="secondary" size="sm" @click="handleAddExpense">
+                  Add Expense
+                </Button>
+              </div>
             </div>
 
             <div v-if="budgetStore.expenses.length === 0" class="empty-state">
@@ -204,15 +228,73 @@
                       <option value="fortnightly">Fortnightly</option>
                       <option value="monthly">Monthly</option>
                       <option value="annually">Annually</option>
+                      <option value="one-off">One-off</option>
                     </select>
                   </div>
-                  <div v-if="expense.frequency === 'monthly' || expense.frequency === 'annually'" class="form-group">
-                    <label>Next Due Date</label>
+                  <!-- Due Day selector for weekly/fortnightly -->
+                  <div v-if="expense.frequency === 'weekly' || expense.frequency === 'fortnightly'" class="form-group">
+                    <label>Due Day</label>
+                    <select
+                      :value="expense.dueDay ?? 1"
+                      @change="budgetStore.updateExpense(expense.id, 'dueDay', parseInt($event.target.value))"
+                    >
+                      <option :value="1">Monday</option>
+                      <option :value="2">Tuesday</option>
+                      <option :value="3">Wednesday</option>
+                      <option :value="4">Thursday</option>
+                      <option :value="5">Friday</option>
+                      <option :value="6">Saturday</option>
+                      <option :value="0">Sunday</option>
+                    </select>
+                  </div>
+                  <!-- Due Date of Month selector for monthly (when no specific date) -->
+                  <div v-if="expense.frequency === 'monthly'" class="form-group">
+                    <label>Due Day of Month</label>
+                    <select
+                      :value="getExpenseDueDayOfMonth(expense)"
+                      @change="budgetStore.updateExpense(expense.id, 'dueDate', parseInt($event.target.value))"
+                    >
+                      <option v-for="day in 31" :key="day" :value="day">{{ day }}</option>
+                    </select>
+                  </div>
+                  <div v-if="expense.frequency === 'annually' || expense.frequency === 'one-off'" class="form-group">
+                    <label>{{ expense.frequency === 'one-off' ? 'Due Date' : 'Next Due Date' }}</label>
                     <input
                       :value="expense.date"
                       type="date"
                       @input="budgetStore.updateExpense(expense.id, 'date', $event.target.value)"
                     />
+                    <small v-if="expense.frequency === 'one-off' && expense.date && expense.amount" class="field-hint expense-hint">
+                      {{ budgetStore.weeksUntilDate(expense.date) }} weeks remaining · ${{ budgetStore.getWeeklyAmount(expense).toFixed(2) }}/week
+                    </small>
+                  </div>
+                  <!-- Auto-pay toggle -->
+                  <div class="form-group checkbox-inline">
+                    <label class="checkbox-label">
+                      <input
+                        type="checkbox"
+                        :checked="expense.autoPayEnabled !== false"
+                        @change="budgetStore.updateExpense(expense.id, 'autoPayEnabled', $event.target.checked)"
+                      />
+                      <span>Auto-pay when due</span>
+                    </label>
+                  </div>
+                  <!-- Group selector -->
+                  <div class="form-group">
+                    <label>Group</label>
+                    <select
+                      :value="expense.groupId || ''"
+                      @change="budgetStore.assignExpenseToGroup(expense.id, $event.target.value || null)"
+                    >
+                      <option value="">(No Group)</option>
+                      <option
+                        v-for="group in budgetStore.expenseGroups"
+                        :key="group.id"
+                        :value="group.id"
+                      >
+                        {{ group.name }}
+                      </option>
+                    </select>
                   </div>
                 </div>
                 <button class="btn-remove" @click="budgetStore.removeExpense(expense.id)">
@@ -346,41 +428,48 @@
                   </svg>
                 </button>
 
-                <!-- Sub-Accounts Section (Auto-generated) -->
+                <!-- Virtual Sub-Accounts Section (from expenses) -->
                 <div v-if="account.isExpenseAccount" class="sub-accounts-section">
                   <div class="sub-accounts-header">
-                    <h4>Expense Funds (Auto-Generated)</h4>
-                    <small class="text-muted">Each expense automatically gets its own dedicated fund</small>
+                    <h4>Expense Funds (Virtual Sub-Accounts)</h4>
+                    <small class="text-muted">Each expense has a dedicated fund that fills up weekly</small>
                   </div>
 
-                  <div v-if="!account.sub_accounts || account.sub_accounts.length === 0" class="sub-accounts-empty">
-                    <p>No expense funds yet. Add expenses above and a dedicated fund will be created automatically for each one.</p>
+                  <div v-if="budgetStore.expenses.length === 0" class="sub-accounts-empty">
+                    <p>No expense funds yet. Add expenses in Section 2 above - each will get its own virtual sub-account.</p>
                   </div>
 
                   <div v-else class="sub-accounts-list sub-accounts-readonly">
                     <div
-                      v-for="subAccount in account.sub_accounts"
-                      :key="subAccount.id"
+                      v-for="expense in budgetStore.expenses"
+                      :key="expense.id"
                       class="sub-account-item readonly"
                     >
                       <div class="sub-account-display">
-                        <div class="sub-account-name">{{ subAccount.name || 'Unnamed Expense' }}</div>
+                        <div class="sub-account-name">
+                          {{ expense.name || 'Unnamed Expense' }}
+                          <span class="sub-account-frequency">${{ expense.amount }}/{{ expense.frequency }}</span>
+                        </div>
                         <div class="sub-account-balance">
-                          <label>Current Balance:</label>
-                          <div class="input-with-prefix">
-                            <span class="prefix">$</span>
-                            <input
-                              :value="subAccount.balance"
-                              type="number"
-                              step="0.01"
-                              placeholder="0.00"
-                              @input="budgetStore.updateSubAccount(account.id, subAccount.id, 'balance', parseFloat($event.target.value) || 0)"
-                            />
+                          <label>Allocated:</label>
+                          <div class="balance-display">
+                            <span class="balance-value">${{ (expense.sub_account?.balance || 0).toFixed(2) }}</span>
+                            <span class="balance-target">/ ${{ budgetStore.calculateTargetBalance(expense).toFixed(2) }} target</span>
                           </div>
                         </div>
                       </div>
                     </div>
-                    <small class="text-muted">💡 Tip: When you delete an expense, its fund is automatically removed too.</small>
+                    <div class="sub-accounts-summary">
+                      <div class="summary-item">
+                        <span>Total Allocated:</span>
+                        <strong>${{ budgetStore.expenses.reduce((sum, e) => sum + (e.sub_account?.balance || 0), 0).toFixed(2) }}</strong>
+                      </div>
+                      <div class="summary-item">
+                        <span>Unallocated Buffer:</span>
+                        <strong>${{ (account.balance || 0).toFixed(2) }}</strong>
+                      </div>
+                    </div>
+                    <small class="text-muted">💡 Use the Expense Account modal on the Dashboard to record transfers and auto-allocate funds.</small>
                   </div>
                 </div>
               </div>
@@ -530,6 +619,9 @@
         </div>
       </Transition>
     </Teleport>
+
+    <!-- Expense Group Manager Modal -->
+    <ExpenseGroupManager v-model="showGroupManager" />
   </div>
 </template>
 
@@ -541,6 +633,7 @@ import { useUserStore } from '@stores/user'
 import { useNotificationStore } from '@stores/notification'
 import { budgetAPI } from '@api/client'
 import Button from '@components/ui/Button.vue'
+import ExpenseGroupManager from '@components/ui/ExpenseGroupManager.vue'
 
 const router = useRouter()
 const budgetStore = useBudgetStore()
@@ -554,9 +647,30 @@ const expandedSections = reactive({
 })
 
 const showSaveModal = ref(false)
+const showGroupManager = ref(false)
+
+// Auto-update IETC eligibility when income changes
+watch(
+  () => budgetStore.isIetcIncomeEligible,
+  (isEligible) => {
+    // Auto-tick if income is in eligible range, auto-untick if not
+    budgetStore.ietcEligible = isEligible
+  },
+  { immediate: true }
+)
 
 function toggleSection(section) {
   expandedSections[section] = !expandedSections[section]
+}
+
+// Helper to get the due day of month for display (uses dueDate if set, otherwise extracts from date field)
+function getExpenseDueDayOfMonth(expense) {
+  if (expense.dueDate !== undefined) return expense.dueDate
+  if (expense.date) {
+    const d = new Date(expense.date)
+    return d.getDate()
+  }
+  return 1 // Default to 1st of month
 }
 
 function handleAddExpense() {
@@ -907,6 +1021,19 @@ watch(
   color: var(--text-primary);
 }
 
+.field-hint {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  margin-top: 0.35rem;
+  line-height: 1.4;
+}
+
+.expense-hint {
+  color: var(--primary-teal);
+  font-weight: 500;
+}
+
 .input-with-prefix {
   position: relative;
   display: flex;
@@ -969,6 +1096,11 @@ watch(
   margin-bottom: 1.5rem;
   flex-wrap: wrap;
   gap: 1rem;
+}
+
+.action-buttons {
+  display: flex;
+  gap: 0.5rem;
 }
 
 .help-text {
@@ -1075,6 +1207,61 @@ watch(
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+}
+
+.sub-account-frequency {
+  font-size: 0.75rem;
+  color: #666;
+  font-weight: normal;
+  margin-left: 0.5rem;
+}
+
+.sub-account-display {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.sub-account-balance .balance-display {
+  display: flex;
+  align-items: baseline;
+  gap: 0.25rem;
+}
+
+.sub-account-balance .balance-value {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--primary-teal);
+}
+
+.sub-account-balance .balance-target {
+  font-size: 0.75rem;
+  color: #999;
+}
+
+.sub-accounts-summary {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.75rem;
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  margin-top: 0.5rem;
+}
+
+.sub-accounts-summary .summary-item {
+  display: flex;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+}
+
+.sub-accounts-summary .summary-item span {
+  color: #666;
+}
+
+.sub-accounts-summary .summary-item strong {
+  color: var(--primary-teal);
 }
 
 .sub-account-item {
@@ -1341,6 +1528,33 @@ watch(
   transform: scale(0.9);
 }
 
+/* Checkbox inline styling */
+.checkbox-inline {
+  display: flex;
+  align-items: center;
+  margin-top: 0.5rem;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+.checkbox-label input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--primary-teal);
+  cursor: pointer;
+}
+
+.checkbox-label span {
+  user-select: none;
+}
+
 @media (max-width: 768px) {
   .calculator-page {
     padding: 1rem;
@@ -1375,5 +1589,77 @@ watch(
   .calculate-actions .btn {
     width: 100%;
   }
+}
+
+/* Tooltip styles for IETC */
+.checkbox-with-tooltip {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.tooltip-trigger {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-secondary);
+  cursor: help;
+}
+
+.tooltip-trigger:hover .tooltip-content,
+.tooltip-trigger:focus .tooltip-content {
+  visibility: visible;
+  opacity: 1;
+}
+
+.tooltip-content {
+  visibility: hidden;
+  opacity: 0;
+  position: absolute;
+  bottom: 100%;
+  right: 0;
+  margin-bottom: 8px;
+  padding: 1rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  width: 300px;
+  z-index: 100;
+  transition: opacity 0.2s ease, visibility 0.2s ease;
+}
+
+.tooltip-content strong {
+  display: block;
+  margin-bottom: 0.5rem;
+  color: var(--text-primary);
+}
+
+.tooltip-content p {
+  margin: 0.5rem 0;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.tooltip-content .income-status {
+  padding: 0.5rem;
+  background: var(--bg-secondary);
+  border-radius: 4px;
+  font-weight: 500;
+}
+
+.tooltip-content .eligible {
+  color: var(--primary-teal);
+}
+
+.tooltip-content .not-eligible {
+  color: var(--text-secondary);
+}
+
+.tooltip-content .tooltip-note {
+  font-size: 0.8rem;
+  font-style: italic;
+  opacity: 0.8;
 }
 </style>

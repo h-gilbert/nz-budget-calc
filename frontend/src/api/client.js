@@ -246,4 +246,44 @@ export const goalAPI = {
   }
 }
 
+// ============================================
+// AUTOMATION API
+// ============================================
+
+export const automationAPI = {
+  async getState() {
+    return apiClient.get('/automation/state')
+  },
+
+  async updateState(stateData) {
+    return apiClient.put('/automation/state', stateData)
+  },
+
+  async getPending() {
+    return apiClient.get('/automation/pending')
+  }
+}
+
+// ============================================
+// PAYMENT API
+// ============================================
+
+export const paymentAPI = {
+  async getHistory(options = {}) {
+    const params = new URLSearchParams()
+    if (options.limit) params.append('limit', options.limit)
+    if (options.offset) params.append('offset', options.offset)
+    if (options.expenseId) params.append('expenseId', options.expenseId)
+    return apiClient.get(`/payments/history?${params.toString()}`)
+  },
+
+  async recordPayment(expenseId, paymentData) {
+    return apiClient.post(`/expenses/${expenseId}/pay`, paymentData)
+  },
+
+  async skipPayment(expenseId, skipData) {
+    return apiClient.post(`/expenses/${expenseId}/skip`, skipData)
+  }
+}
+
 export default apiClient

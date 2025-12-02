@@ -50,6 +50,8 @@ jobs:
           --exclude 'backend/node_modules' \
           --exclude '*.log' \
           --exclude '.env' \
+          --exclude '_legacy' \
+          --exclude '*.pdf' \
           ./ ${SERVER_USER}@${SERVER_HOST}:/mnt/user/appdata/nz-budget-calculator/
 
         # Deploy on server

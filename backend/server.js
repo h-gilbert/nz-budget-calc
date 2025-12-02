@@ -143,6 +143,7 @@ app.post('/api/budget/save', authenticateToken, (req, res) => {
             studentLoan,
             ietcEligible,
             expenses,
+            expenseGroups,
             accounts,
             savingsTarget,
             savingsDeadline,
@@ -164,7 +165,7 @@ app.post('/api/budget/save', authenticateToken, (req, res) => {
                     fixed_hours = ?, min_hours = ?, max_hours = ?,
                     allowance_amount = ?, allowance_frequency = ?,
                     kiwisaver = ?, kiwisaver_rate = ?, student_loan = ?, ietc_eligible = ?,
-                    expenses = ?, accounts = ?, savings_target = ?, savings_deadline = ?,
+                    expenses = ?, expense_groups = ?, accounts = ?, savings_target = ?, savings_deadline = ?,
                     invest_savings = ?, interest_rate = ?, budget_name = ?,
                     is_default = ?, model_weeks = ?, model_start_date = ?, transfer_frequency = ?,
                     weekly_surplus = ?,
@@ -174,7 +175,7 @@ app.post('/api/budget/save', authenticateToken, (req, res) => {
                 payAmount, payType, hoursType, fixedHours, minHours, maxHours,
                 allowanceAmount, allowanceFrequency, kiwisaver ? 1 : 0, kiwisaverRate,
                 studentLoan ? 1 : 0, ietcEligible ? 1 : 0, JSON.stringify(expenses),
-                JSON.stringify(accounts || []), savingsTarget, savingsDeadline, investSavings ? 1 : 0, interestRate, name,
+                JSON.stringify(expenseGroups || []), JSON.stringify(accounts || []), savingsTarget, savingsDeadline, investSavings ? 1 : 0, interestRate, name,
                 setAsDefault ? 1 : 0, modelWeeks || 26, modelStartDate || null, transferFrequency || 'weekly',
                 weeklySurplus || 0,
                 budgetId, userId
@@ -193,16 +194,16 @@ app.post('/api/budget/save', authenticateToken, (req, res) => {
                 INSERT INTO budget_data (
                     user_id, pay_amount, pay_type, hours_type,
                     fixed_hours, min_hours, max_hours, allowance_amount, allowance_frequency,
-                    kiwisaver, kiwisaver_rate, student_loan, ietc_eligible, expenses, accounts,
+                    kiwisaver, kiwisaver_rate, student_loan, ietc_eligible, expenses, expense_groups, accounts,
                     savings_target, savings_deadline, invest_savings, interest_rate,
                     budget_name, is_default, model_weeks, model_start_date, transfer_frequency,
                     weekly_surplus
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             `).run(
                 userId, payAmount, payType, hoursType,
                 fixedHours, minHours, maxHours, allowanceAmount, allowanceFrequency,
                 kiwisaver ? 1 : 0, kiwisaverRate, studentLoan ? 1 : 0, ietcEligible ? 1 : 0,
-                JSON.stringify(expenses), JSON.stringify(accounts || []), savingsTarget, savingsDeadline,
+                JSON.stringify(expenses), JSON.stringify(expenseGroups || []), JSON.stringify(accounts || []), savingsTarget, savingsDeadline,
                 investSavings ? 1 : 0, interestRate, name, setAsDefault ? 1 : 0,
                 modelWeeks || 26, modelStartDate || null, transferFrequency || 'weekly',
                 weeklySurplus || 0
@@ -319,8 +320,9 @@ app.get('/api/budget/load/:id?', authenticateToken, (req, res) => {
             return res.status(404).json({ error: 'No saved budget data found' });
         }
 
-        // Parse expenses and accounts JSON
+        // Parse expenses, expense groups, and accounts JSON
         const expenses = budgetData.expenses ? JSON.parse(budgetData.expenses) : [];
+        const expenseGroups = budgetData.expense_groups ? JSON.parse(budgetData.expense_groups) : [];
         const accounts = budgetData.accounts ? JSON.parse(budgetData.accounts) : [];
 
         res.json({
@@ -340,6 +342,7 @@ app.get('/api/budget/load/:id?', authenticateToken, (req, res) => {
             studentLoan: budgetData.student_loan === 1,
             ietcEligible: budgetData.ietc_eligible === 1,
             expenses,
+            expenseGroups,
             accounts,
             savingsTarget: budgetData.savings_target,
             savingsDeadline: budgetData.savings_deadline,
@@ -2304,6 +2307,595 @@ app.post('/api/goals/create-transfers', authenticateToken, (req, res) => {
         res.status(500).json({ error: 'Server error creating transfer schedules' });
     }
 });
+
+// ============================================
+// AUTOMATION ENDPOINTS
+// ============================================
+
+// Get automation state for user
+app.get('/api/automation/state', authenticateToken, (req, res) => {
+    try {
+        const userId = req.user.userId;
+
+        let state = db.prepare('SELECT * FROM automation_state WHERE user_id = ?').get(userId);
+
+        // Create default state if doesn't exist
+        if (!state) {
+            db.prepare(`
+                INSERT INTO automation_state (user_id, auto_transfer_enabled, auto_expense_enabled)
+                VALUES (?, 1, 1)
+            `).run(userId);
+            state = db.prepare('SELECT * FROM automation_state WHERE user_id = ?').get(userId);
+        }
+
+        res.json({
+            lastTransferDate: state.last_transfer_date,
+            lastExpenseCheckDate: state.last_expense_check_date,
+            autoTransferEnabled: state.auto_transfer_enabled === 1,
+            autoExpenseEnabled: state.auto_expense_enabled === 1,
+            updatedAt: state.updated_at
+        });
+    } catch (error) {
+        console.error('Get automation state error:', error);
+        res.status(500).json({ error: 'Server error getting automation state' });
+    }
+});
+
+// Update automation state
+app.put('/api/automation/state', authenticateToken, (req, res) => {
+    try {
+        const userId = req.user.userId;
+        const {
+            lastTransferDate,
+            lastExpenseCheckDate,
+            autoTransferEnabled,
+            autoExpenseEnabled
+        } = req.body;
+
+        // Ensure state record exists
+        const existing = db.prepare('SELECT id FROM automation_state WHERE user_id = ?').get(userId);
+
+        if (existing) {
+            const updates = [];
+            const values = [];
+
+            if (lastTransferDate !== undefined) {
+                updates.push('last_transfer_date = ?');
+                values.push(lastTransferDate);
+            }
+            if (lastExpenseCheckDate !== undefined) {
+                updates.push('last_expense_check_date = ?');
+                values.push(lastExpenseCheckDate);
+            }
+            if (autoTransferEnabled !== undefined) {
+                updates.push('auto_transfer_enabled = ?');
+                values.push(autoTransferEnabled ? 1 : 0);
+            }
+            if (autoExpenseEnabled !== undefined) {
+                updates.push('auto_expense_enabled = ?');
+                values.push(autoExpenseEnabled ? 1 : 0);
+            }
+
+            if (updates.length > 0) {
+                updates.push('updated_at = CURRENT_TIMESTAMP');
+                values.push(userId);
+
+                db.prepare(`
+                    UPDATE automation_state SET ${updates.join(', ')} WHERE user_id = ?
+                `).run(...values);
+            }
+        } else {
+            db.prepare(`
+                INSERT INTO automation_state (
+                    user_id, last_transfer_date, last_expense_check_date,
+                    auto_transfer_enabled, auto_expense_enabled
+                ) VALUES (?, ?, ?, ?, ?)
+            `).run(
+                userId,
+                lastTransferDate || null,
+                lastExpenseCheckDate || null,
+                autoTransferEnabled !== false ? 1 : 0,
+                autoExpenseEnabled !== false ? 1 : 0
+            );
+        }
+
+        res.json({ message: 'Automation state updated successfully' });
+    } catch (error) {
+        console.error('Update automation state error:', error);
+        res.status(500).json({ error: 'Server error updating automation state' });
+    }
+});
+
+// Get pending automation actions (preview without executing)
+app.get('/api/automation/pending', authenticateToken, (req, res) => {
+    try {
+        const userId = req.user.userId;
+
+        // Get automation state
+        const state = db.prepare('SELECT * FROM automation_state WHERE user_id = ?').get(userId);
+
+        // Get user's default budget
+        const budget = db.prepare(`
+            SELECT * FROM budget_data
+            WHERE user_id = ? AND is_default = 1
+        `).get(userId);
+
+        if (!budget) {
+            return res.json({
+                hasActions: false,
+                pendingTransfer: null,
+                pendingExpenses: []
+            });
+        }
+
+        const expenses = budget.expenses ? JSON.parse(budget.expenses) : [];
+        const accounts = budget.accounts ? JSON.parse(budget.accounts) : [];
+        const expenseAccount = accounts.find(a => a.isExpenseAccount);
+
+        const today = new Date();
+        const todayStr = today.toISOString().split('T')[0];
+
+        // Check for pending weekly transfer
+        let pendingTransfer = null;
+        if (state?.auto_transfer_enabled !== 0) {
+            const lastTransferDate = state?.last_transfer_date;
+            // Use model start date as baseline, or previous Monday if not set
+            const modelStartDate = budget.model_start_date;
+            let baselineDate;
+            if (lastTransferDate) {
+                baselineDate = new Date(lastTransferDate);
+            } else if (modelStartDate) {
+                // Use the Monday before model start date as baseline
+                baselineDate = getMonday(new Date(modelStartDate));
+                baselineDate.setDate(baselineDate.getDate() - 7);
+            } else {
+                // Default to previous Monday (1 week ago)
+                baselineDate = getMonday(today);
+                baselineDate.setDate(baselineDate.getDate() - 7);
+            }
+            const lastMonday = getMonday(baselineDate);
+            const thisMonday = getMonday(today);
+
+            if (thisMonday > lastMonday) {
+                // Calculate equilibrium (sum of weekly expenses)
+                const weeklyTotal = expenses.reduce((sum, exp) => {
+                    return sum + getWeeklyAmount(exp);
+                }, 0);
+
+                const missedWeeks = Math.floor((thisMonday - lastMonday) / (7 * 24 * 60 * 60 * 1000));
+                pendingTransfer = {
+                    isNewWeek: true,
+                    weekDate: thisMonday.toISOString().split('T')[0],
+                    equilibriumAmount: Math.round(weeklyTotal * 100) / 100,
+                    missedWeeks: Math.min(missedWeeks, 52) // Cap at 52 weeks to avoid absurd numbers
+                };
+            }
+        }
+
+        // Check for pending expense payments
+        // Find expenses due from last check date until today (past due) + today
+        const pendingExpenses = [];
+
+        // Determine start date for checking (last expense check or model start)
+        let checkFromDate;
+        if (state?.last_expense_check_date) {
+            checkFromDate = new Date(state.last_expense_check_date);
+        } else if (budget.model_start_date) {
+            checkFromDate = new Date(budget.model_start_date);
+        } else {
+            // Default to 1 week ago if no baseline
+            checkFromDate = new Date(today);
+            checkFromDate.setDate(checkFromDate.getDate() - 7);
+        }
+
+        // Include today and slightly into future (end of day)
+        const endDate = new Date(today);
+        endDate.setHours(23, 59, 59, 999);
+
+        for (const expense of expenses) {
+            // Find all due dates from last check until now
+            const dueDates = calculateDueDatesBetween(expense, checkFromDate, endDate);
+
+            for (const dueDate of dueDates) {
+                const subAccountBalance = expense.sub_account?.balance || 0;
+                const isManual = expense.autoPayEnabled === false;
+                const isPastDue = dueDate < today;
+                pendingExpenses.push({
+                    expenseId: expense.id,
+                    expenseName: expense.description || expense.name || 'Unnamed Expense',
+                    name: expense.description || expense.name || 'Unnamed Expense',
+                    amount: expense.amount,
+                    dueDate: dueDate.toISOString().split('T')[0],
+                    subAccountBalance,
+                    willGoNegative: subAccountBalance < expense.amount,
+                    deficitAmount: Math.max(0, expense.amount - subAccountBalance),
+                    isManual: isManual,
+                    isPastDue: isPastDue
+                });
+            }
+        }
+
+        // Sort by due date (oldest first) and limit to avoid overwhelming
+        pendingExpenses.sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
+        const limitedPendingExpenses = pendingExpenses.slice(0, 50);
+
+        res.json({
+            hasActions: pendingTransfer !== null || limitedPendingExpenses.length > 0,
+            pendingTransfer,
+            pendingExpenses: limitedPendingExpenses,
+            automationState: {
+                autoTransferEnabled: state?.auto_transfer_enabled === 1,
+                autoExpenseEnabled: state?.auto_expense_enabled === 1
+            }
+        });
+    } catch (error) {
+        console.error('Get pending automation error:', error);
+        res.status(500).json({ error: 'Server error getting pending actions' });
+    }
+});
+
+// Get payment history
+app.get('/api/payments/history', authenticateToken, (req, res) => {
+    try {
+        const userId = req.user.userId;
+        const { limit = 50, offset = 0, expenseId } = req.query;
+
+        let query = 'SELECT * FROM payment_history WHERE user_id = ?';
+        const params = [userId];
+
+        if (expenseId) {
+            query += ' AND expense_id = ?';
+            params.push(expenseId);
+        }
+
+        query += ' ORDER BY payment_date DESC, created_at DESC LIMIT ? OFFSET ?';
+        params.push(parseInt(limit), parseInt(offset));
+
+        const payments = db.prepare(query).all(...params);
+
+        // Get total count
+        let countQuery = 'SELECT COUNT(*) as count FROM payment_history WHERE user_id = ?';
+        const countParams = [userId];
+        if (expenseId) {
+            countQuery += ' AND expense_id = ?';
+            countParams.push(expenseId);
+        }
+        const totalCount = db.prepare(countQuery).get(...countParams).count;
+
+        res.json({
+            payments: payments.map(p => ({
+                id: p.id,
+                expenseId: p.expense_id,
+                expenseName: p.expense_name,
+                amountDue: p.amount_due,
+                amountPaid: p.amount_paid,
+                paymentDate: p.payment_date,
+                dueDate: p.due_date,
+                paymentType: p.payment_type,
+                balanceBefore: p.balance_before,
+                balanceAfter: p.balance_after,
+                wentNegative: p.went_negative === 1,
+                notes: p.notes,
+                createdAt: p.created_at
+            })),
+            total: totalCount,
+            limit: parseInt(limit),
+            offset: parseInt(offset)
+        });
+    } catch (error) {
+        console.error('Get payment history error:', error);
+        res.status(500).json({ error: 'Server error getting payment history' });
+    }
+});
+
+// Record a payment (manual or automatic)
+app.post('/api/expenses/:expenseId/pay', authenticateToken, (req, res) => {
+    try {
+        const userId = req.user.userId;
+        const { expenseId } = req.params;
+        const {
+            amount,
+            dueDate,
+            paymentType = 'manual',
+            notes = '',
+            balanceBefore,
+            balanceAfter
+        } = req.body;
+
+        // Get the budget to find expense name
+        const budget = db.prepare(`
+            SELECT * FROM budget_data
+            WHERE user_id = ? AND is_default = 1
+        `).get(userId);
+
+        if (!budget) {
+            return res.status(404).json({ error: 'No default budget found' });
+        }
+
+        const expenses = budget.expenses ? JSON.parse(budget.expenses) : [];
+        const expense = expenses.find(e => e.id === expenseId);
+
+        if (!expense) {
+            return res.status(404).json({ error: 'Expense not found' });
+        }
+
+        const paymentDate = new Date().toISOString().split('T')[0];
+        const actualDueDate = dueDate || paymentDate;
+        const amountDue = expense.amount;
+        const amountPaid = amount !== undefined ? amount : expense.amount;
+
+        // Check for duplicate payment (same expense + due date)
+        const existingPayment = db.prepare(`
+            SELECT id FROM payment_history
+            WHERE user_id = ? AND expense_id = ? AND due_date = ? AND payment_type != 'skipped'
+        `).get(userId, expenseId, actualDueDate);
+
+        if (existingPayment) {
+            return res.status(409).json({
+                error: 'Payment already recorded for this expense on this date',
+                existingPaymentId: existingPayment.id
+            });
+        }
+
+        // Deduct from sub-account balance
+        const currentBalance = expense.sub_account?.balance || 0;
+        const newBalance = currentBalance - amountPaid;
+
+        if (!expense.sub_account) {
+            expense.sub_account = { balance: 0 };
+        }
+        expense.sub_account.balance = newBalance;
+
+        // Save updated expenses back to database
+        db.prepare(`
+            UPDATE budget_data SET expenses = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        `).run(JSON.stringify(expenses), budget.id);
+
+        const wentNegative = newBalance < 0 ? 1 : 0;
+
+        const result = db.prepare(`
+            INSERT INTO payment_history (
+                user_id, expense_id, expense_name, amount_due, amount_paid,
+                payment_date, due_date, payment_type, balance_before, balance_after,
+                went_negative, notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+            userId, expenseId, expense.description || expense.name, amountDue, amountPaid,
+            paymentDate, actualDueDate, paymentType, currentBalance, newBalance,
+            wentNegative, notes
+        );
+
+        res.json({
+            message: 'Payment recorded successfully',
+            paymentId: result.lastInsertRowid,
+            payment: {
+                id: result.lastInsertRowid,
+                expenseId,
+                expenseName: expense.description || expense.name,
+                amountDue,
+                amountPaid,
+                paymentDate,
+                dueDate: actualDueDate,
+                paymentType,
+                balanceBefore: currentBalance,
+                balanceAfter: newBalance,
+                wentNegative: wentNegative === 1
+            }
+        });
+    } catch (error) {
+        console.error('Record payment error:', error);
+        res.status(500).json({ error: 'Server error recording payment' });
+    }
+});
+
+// Skip a scheduled payment
+app.post('/api/expenses/:expenseId/skip', authenticateToken, (req, res) => {
+    try {
+        const userId = req.user.userId;
+        const { expenseId } = req.params;
+        const { dueDate, reason = '' } = req.body;
+
+        // Get the budget to find expense
+        const budget = db.prepare(`
+            SELECT * FROM budget_data
+            WHERE user_id = ? AND is_default = 1
+        `).get(userId);
+
+        if (!budget) {
+            return res.status(404).json({ error: 'No default budget found' });
+        }
+
+        const expenses = budget.expenses ? JSON.parse(budget.expenses) : [];
+        const expense = expenses.find(e => e.id === expenseId);
+
+        if (!expense) {
+            return res.status(404).json({ error: 'Expense not found' });
+        }
+
+        const paymentDate = new Date().toISOString().split('T')[0];
+        const actualDueDate = dueDate || paymentDate;
+        const balanceBefore = expense.sub_account?.balance || 0;
+
+        const result = db.prepare(`
+            INSERT INTO payment_history (
+                user_id, expense_id, expense_name, amount_due, amount_paid,
+                payment_date, due_date, payment_type, balance_before, balance_after,
+                went_negative, notes
+            ) VALUES (?, ?, ?, ?, 0, ?, ?, 'skipped', ?, ?, 0, ?)
+        `).run(
+            userId, expenseId, expense.description || expense.name, expense.amount,
+            paymentDate, actualDueDate, balanceBefore, balanceBefore, reason
+        );
+
+        res.json({
+            message: 'Payment skipped',
+            paymentId: result.lastInsertRowid
+        });
+    } catch (error) {
+        console.error('Skip payment error:', error);
+        res.status(500).json({ error: 'Server error skipping payment' });
+    }
+});
+
+// Helper function to get Monday of a week
+function getMonday(date) {
+    const d = new Date(date);
+    const day = d.getDay();
+    const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+    return new Date(d.setDate(diff));
+}
+
+// Helper function to convert expense to weekly amount
+function getWeeklyAmount(expense) {
+    const amount = parseFloat(expense.amount) || 0;
+    switch (expense.frequency || expense.period) {
+        case 'weekly': return amount;
+        case 'fortnightly': return amount / 2;
+        case 'monthly': return amount / 4.33;
+        case 'annually':
+        case 'annual': return amount / 52;
+        case 'one-off':
+            if (expense.date) {
+                const weeksUntil = Math.max(1, Math.ceil((new Date(expense.date) - new Date()) / (7 * 24 * 60 * 60 * 1000)));
+                return amount / weeksUntil;
+            }
+            return amount / 52;
+        default: return amount;
+    }
+}
+
+// Helper to get day of month from expense (uses dueDate if set, otherwise extracts from date field)
+function getDueDayOfMonth(expense) {
+    if (expense.dueDate !== undefined) return expense.dueDate;
+    if (expense.date) {
+        const d = new Date(expense.date);
+        return d.getDate();
+    }
+    return 1; // Default to 1st of month
+}
+
+// Helper function to calculate next due date for an expense from a given date
+function calculateNextDueDateForExpense(expense, fromDate = new Date()) {
+    const from = new Date(fromDate);
+    const frequency = expense.frequency || expense.period || 'weekly';
+    // Check both dueDay (new) and dayOfWeek (legacy) for backwards compatibility
+    const dueDay = expense.dueDay !== undefined && expense.dueDay !== null
+        ? expense.dueDay
+        : (expense.dayOfWeek !== undefined && expense.dayOfWeek !== null ? expense.dayOfWeek : 1);
+    const dueDateOfMonth = getDueDayOfMonth(expense);
+
+    switch (frequency) {
+        case 'weekly': {
+            const result = new Date(from);
+            const currentDay = result.getDay();
+            let daysUntil = dueDay - currentDay;
+            if (daysUntil <= 0) daysUntil += 7;
+            result.setDate(result.getDate() + daysUntil);
+            return result;
+        }
+        case 'fortnightly': {
+            const result = new Date(from);
+            const currentDay = result.getDay();
+            let daysUntil = dueDay - currentDay;
+            if (daysUntil <= 0) daysUntil += 7;
+            result.setDate(result.getDate() + daysUntil);
+            return result;
+        }
+        case 'monthly': {
+            const result = new Date(from);
+            result.setDate(dueDateOfMonth);
+            if (result <= from) {
+                result.setMonth(result.getMonth() + 1);
+            }
+            return result;
+        }
+        case 'annually':
+        case 'annual':
+        case 'one-off':
+            if (expense.date) {
+                const targetDate = new Date(expense.date);
+                if (targetDate > from) return targetDate;
+            }
+            return null;
+        default:
+            return null;
+    }
+}
+
+// Helper function to calculate due dates between two dates
+function calculateDueDatesBetween(expense, startDate, endDate) {
+    const dueDates = [];
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+
+    // Default due day is Monday (1) for weekly/fortnightly
+    // Check both dueDay (new) and dayOfWeek (legacy) for backwards compatibility
+    const dueDay = expense.dueDay !== undefined && expense.dueDay !== null
+        ? expense.dueDay
+        : (expense.dayOfWeek !== undefined && expense.dayOfWeek !== null ? expense.dayOfWeek : 1);
+    const dueDateOfMonth = getDueDayOfMonth(expense);
+
+    const frequency = expense.frequency || expense.period;
+
+    if (frequency === 'weekly') {
+        let current = getNextDayOfWeek(start, dueDay);
+        while (current <= end) {
+            dueDates.push(new Date(current));
+            current.setDate(current.getDate() + 7);
+        }
+    } else if (frequency === 'fortnightly') {
+        let current = getNextDayOfWeek(start, dueDay);
+        while (current <= end) {
+            dueDates.push(new Date(current));
+            current.setDate(current.getDate() + 14);
+        }
+    } else if (frequency === 'monthly') {
+        let current = new Date(start);
+        current.setDate(dueDateOfMonth);
+        if (current <= start) {
+            current.setMonth(current.getMonth() + 1);
+        }
+        while (current <= end) {
+            dueDates.push(new Date(current));
+            current.setMonth(current.getMonth() + 1);
+        }
+    } else if (frequency === 'annually' || frequency === 'annual') {
+        if (expense.date) {
+            const annualDate = new Date(expense.date);
+            // Check if the annual date falls within range
+            let checkDate = new Date(annualDate);
+            checkDate.setFullYear(start.getFullYear());
+            if (checkDate < start) {
+                checkDate.setFullYear(checkDate.getFullYear() + 1);
+            }
+            if (checkDate <= end) {
+                dueDates.push(checkDate);
+            }
+        }
+    } else if (frequency === 'one-off') {
+        if (expense.date) {
+            const oneOffDate = new Date(expense.date);
+            if (oneOffDate > start && oneOffDate <= end) {
+                dueDates.push(oneOffDate);
+            }
+        }
+    }
+
+    return dueDates;
+}
+
+// Helper function to get next occurrence of a day of week
+function getNextDayOfWeek(fromDate, targetDay) {
+    const result = new Date(fromDate);
+    const currentDay = result.getDay();
+    let daysUntil = targetDay - currentDay;
+    if (daysUntil < 0) {
+        daysUntil += 7;
+    }
+    result.setDate(result.getDate() + daysUntil);
+    return result;
+}
 
 // Health check
 app.get('/api/health', (req, res) => {

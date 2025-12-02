@@ -6,28 +6,11 @@ Separate commands to run on local computer and commands to run on a server or an
 
 Please overwrite everything below this line. Don't overwrite this line or above.
 
-=== COMMANDS TO RUN ON LOCAL COMPUTER ===
+cd ~/Downloads/Projects/nz-budget-calculator && scp backend/fix-expense-subaccount-links.js root@192.168.1.2:/mnt/user/appdata/nz-budget-calculator/backend/
 
-cd ~/Downloads/Projects/nz-budget-calculator
-git status
-git add .
-git commit -m "Add GitHub Actions deployment and fix backend health check
-
-- Add /health endpoint for Docker healthcheck
-- Fix duplicate sub-accounts bug in budget store
-- Add automated deployment workflow
-- Update .gitignore for security
-- Add cleanup script for duplicate sub-accounts"
-git push origin main
-echo ""
-echo "✅ Pushed to GitHub! Now go to:"
-echo "https://github.com/h-gilbert/nz-budget-calc/actions"
-echo ""
-echo "Watch the deployment run in real-time!"
-
-=== COMMANDS TO RUN ON SERVER (After deployment completes) ===
-
-docker ps | grep budget
-docker logs --tail 30 budget-backend
-curl http://localhost:3200/health
-docker inspect budget-backend --format='Health: {{.State.Health.Status}}'
+cd /mnt/user/appdata/nz-budget-calculator
+docker cp backend/fix-expense-subaccount-links.js budget-backend:/app/
+docker exec budget-backend node /app/fix-expense-subaccount-links.js
+docker restart budget-backend
+sleep 5
+docker logs --tail 20 budget-backend

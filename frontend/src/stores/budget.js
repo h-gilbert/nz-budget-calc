@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { transferAPI } from '@/api/client'
+import { transferAPI, automationAPI, paymentAPI } from '@/api/client'
 
 // Helper function to format date as YYYY-MM-DD in local time (not UTC)
 function formatDateLocal(date) {
@@ -61,6 +61,10 @@ export const useBudgetStore = defineStore('budget', () => {
   const expenses = ref([])
   const expenseCount = ref(0)
 
+  // Expense Groups (for visual organization)
+  const expenseGroups = ref([])
+  const expenseGroupCount = ref(0)
+
   // Accounts
   const accounts = ref([])
   const accountCount = ref(0)
@@ -81,19 +85,57 @@ export const useBudgetStore = defineStore('budget', () => {
   const results = ref(null)
   const hasCalculated = ref(false)
 
+  // Automation state
+  const automationState = ref({
+    lastTransferDate: null,
+    lastExpenseCheckDate: null,
+    autoTransferEnabled: true,
+    autoExpenseEnabled: true
+  })
+
+  const pendingActions = ref({
+    transfer: null,
+    expenses: [],
+    hasActions: false
+  })
+
+  const recentPayments = ref([])
+
+  // Helper function to calculate weeks until a date
+  function weeksUntilDate(dateStr) {
+    if (!dateStr) return 1 // Default to 1 week if no date
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    const targetDate = new Date(dateStr)
+    targetDate.setHours(0, 0, 0, 0)
+    const diffTime = targetDate - today
+    const diffWeeks = Math.ceil(diffTime / (7 * 24 * 60 * 60 * 1000))
+    return Math.max(1, diffWeeks) // At least 1 week
+  }
+
+  // Helper function to convert expense amount to weekly equivalent
+  function getWeeklyAmount(expense) {
+    const amount = parseFloat(expense.amount) || 0
+    const frequency = expense.frequency || 'weekly'
+
+    if (frequency === 'one-off') {
+      // Spread one-off expense across weeks until due date
+      const weeks = weeksUntilDate(expense.date)
+      return amount / weeks
+    } else if (frequency === 'monthly') {
+      return amount / 4.33
+    } else if (frequency === 'fortnightly') {
+      return amount / 2
+    } else if (frequency === 'annually') {
+      return amount / 52
+    }
+    return amount // weekly
+  }
+
   // Computed
   const totalExpenses = computed(() => {
     return expenses.value.reduce((total, expense) => {
-      const amount = parseFloat(expense.amount) || 0
-      const frequency = expense.frequency || 'weekly'
-
-      // Convert to weekly
-      let weeklyAmount = amount
-      if (frequency === 'monthly') weeklyAmount = amount / 4.33
-      else if (frequency === 'fortnightly') weeklyAmount = amount / 2
-      else if (frequency === 'annually') weeklyAmount = amount / 52
-
-      return total + weeklyAmount
+      return total + getWeeklyAmount(expense)
     }, 0)
   })
 
@@ -119,18 +161,97 @@ export const useBudgetStore = defineStore('budget', () => {
     return results.value.weeklyDiscretionary || 0
   })
 
+  // Estimated annual income (for IETC eligibility check)
+  const estimatedAnnualIncome = computed(() => {
+    let weeklyGross = payAmount.value || 0
+
+    if (payType.value === 'hourly') {
+      weeklyGross = payAmount.value * (fixedHours.value || 40)
+    } else if (payType.value === 'fortnightly') {
+      weeklyGross = payAmount.value / 2
+    } else if (payType.value === 'monthly') {
+      weeklyGross = payAmount.value / 4.33
+    } else if (payType.value === 'annually') {
+      weeklyGross = payAmount.value / 52
+    }
+
+    return weeklyGross * 52
+  })
+
+  // Check if income is within IETC eligible range ($24,000 - $70,000)
+  const isIetcIncomeEligible = computed(() => {
+    const income = estimatedAnnualIncome.value
+    return income >= 24000 && income <= 70000
+  })
+
+  // Group expenses by groupId for display
+  const groupedExpenses = computed(() => {
+    const grouped = {}
+
+    // Initialize groups from expenseGroups
+    for (const group of expenseGroups.value) {
+      grouped[group.id] = {
+        ...group,
+        expenses: [],
+        totalBalance: 0,
+        totalWeekly: 0
+      }
+    }
+
+    // Add ungrouped category
+    grouped['ungrouped'] = {
+      id: 'ungrouped',
+      name: 'Other / Ungrouped',
+      color: '#9E9E9E',
+      order: 999,
+      expenses: [],
+      totalBalance: 0,
+      totalWeekly: 0
+    }
+
+    // Sort expenses into groups
+    for (const expense of expenses.value) {
+      const groupId = expense.groupId || 'ungrouped'
+      if (grouped[groupId]) {
+        grouped[groupId].expenses.push(expense)
+        grouped[groupId].totalBalance += expense.sub_account?.balance || 0
+        grouped[groupId].totalWeekly += getWeeklyAmount(expense)
+      } else {
+        // Group was deleted, put in ungrouped
+        grouped['ungrouped'].expenses.push(expense)
+        grouped['ungrouped'].totalBalance += expense.sub_account?.balance || 0
+        grouped['ungrouped'].totalWeekly += getWeeklyAmount(expense)
+      }
+    }
+
+    // Convert to sorted array, only include groups with expenses or defined groups
+    return Object.values(grouped)
+      .filter(g => g.expenses.length > 0 || g.id !== 'ungrouped')
+      .sort((a, b) => a.order - b.order)
+  })
+
+  // Get a flat list of group options for dropdown
+  const groupOptions = computed(() => {
+    return [
+      { id: null, name: '(No Group)' },
+      ...expenseGroups.value.map(g => ({ id: g.id, name: g.name }))
+    ]
+  })
+
   // Actions
   function addExpense() {
     expenseCount.value++
     const expenseId = `expense-${expenseCount.value}`
 
-    // Create the expense (sub-account will be created when user adds a name)
+    // Create the expense with embedded virtual sub_account
     const newExpense = {
       id: expenseId,
       name: '',
       amount: 0,
       frequency: 'weekly',
-      subAccountId: null
+      sub_account: {
+        balance: 0
+      }
     }
     expenses.value.unshift(newExpense)
   }
@@ -139,18 +260,15 @@ export const useBudgetStore = defineStore('budget', () => {
     const expense = expenses.value.find(e => e.id === id)
     if (!expense) return
 
-    // Remove the associated sub-account if it exists
-    if (expense.subAccountId) {
+    // Return any allocated balance back to the expense account
+    if (expense.sub_account && expense.sub_account.balance > 0) {
       const expenseAccount = accounts.value.find(a => a.isExpenseAccount)
-      if (expenseAccount && expenseAccount.sub_accounts) {
-        const subIndex = expenseAccount.sub_accounts.findIndex(sa => sa.id === expense.subAccountId)
-        if (subIndex > -1) {
-          expenseAccount.sub_accounts.splice(subIndex, 1)
-        }
+      if (expenseAccount) {
+        expenseAccount.balance = (expenseAccount.balance || 0) + expense.sub_account.balance
       }
     }
 
-    // Remove the expense
+    // Remove the expense (virtual sub_account is automatically removed with it)
     const index = expenses.value.findIndex(e => e.id === id)
     if (index > -1) {
       expenses.value.splice(index, 1)
@@ -166,53 +284,357 @@ export const useBudgetStore = defineStore('budget', () => {
       } else {
         expense[field] = value
       }
+      // Virtual sub_account is embedded - name updates automatically with expense.name
+    }
+  }
 
-      // If updating the name field
-      if (field === 'name') {
-        // If expense doesn't have a sub-account yet and now has a name, create one
-        if (!expense.subAccountId && value && value.trim()) {
-          const expenseAccount = accounts.value.find(a => a.isExpenseAccount)
-          if (expenseAccount) {
-            accountCount.value++
-            const subAccountId = `subaccount-${accountCount.value}`
+  // Update sub_account balance for a specific expense
+  function updateExpenseSubAccountBalance(expenseId, balance) {
+    const expense = expenses.value.find(e => e.id === expenseId)
+    if (expense && expense.sub_account) {
+      expense.sub_account.balance = parseFloat(balance) || 0
+    }
+  }
 
-            const subAccount = {
-              id: subAccountId,
-              name: value,
-              balance: 0,
-              target: null,
-              isExpenseAccount: false,
-              isSpendingAccount: false,
-              isWeekAhead: false,
-              priority: accountCount.value,
-              purpose: '',
-              startingBalanceDate: null,
-              parentAccountId: expenseAccount.id,
-              autoAllocate: true,
-              sub_accounts: []
-            }
+  // ============================================
+  // EXPENSE GROUP ACTIONS
+  // ============================================
 
-            if (!expenseAccount.sub_accounts) {
-              expenseAccount.sub_accounts = []
-            }
-            expenseAccount.sub_accounts.push(subAccount)
+  // Add a new expense group
+  function addExpenseGroup(name = '', color = '#4CAF50') {
+    expenseGroupCount.value++
+    const newGroup = {
+      id: `group-${Date.now()}-${expenseGroupCount.value}`,
+      name,
+      color,
+      order: expenseGroups.value.length + 1
+    }
+    expenseGroups.value.push(newGroup)
+    return newGroup
+  }
 
-            // Link expense to its sub-account
-            expense.subAccountId = subAccountId
-          }
+  // Update an expense group
+  function updateExpenseGroup(groupId, updates) {
+    const group = expenseGroups.value.find(g => g.id === groupId)
+    if (group) {
+      Object.assign(group, updates)
+    }
+  }
+
+  // Remove an expense group (moves expenses to ungrouped)
+  function removeExpenseGroup(groupId) {
+    // Unassign all expenses from this group
+    expenses.value.forEach(expense => {
+      if (expense.groupId === groupId) {
+        expense.groupId = null
+      }
+    })
+
+    // Remove the group
+    const index = expenseGroups.value.findIndex(g => g.id === groupId)
+    if (index > -1) {
+      expenseGroups.value.splice(index, 1)
+    }
+  }
+
+  // Assign expense to group
+  function assignExpenseToGroup(expenseId, groupId) {
+    const expense = expenses.value.find(e => e.id === expenseId)
+    if (expense) {
+      expense.groupId = groupId || null // null for ungrouped
+    }
+  }
+
+  // Reorder expense groups
+  function reorderExpenseGroups(newOrder) {
+    expenseGroups.value = newOrder.map((id, index) => {
+      const group = expenseGroups.value.find(g => g.id === id)
+      return { ...group, order: index + 1 }
+    })
+  }
+
+  // Allocate money from expense account to an expense's sub_account
+  function allocateToExpense(expenseId, amount) {
+    const expense = expenses.value.find(e => e.id === expenseId)
+    const expenseAccount = accounts.value.find(a => a.isExpenseAccount)
+
+    if (!expense || !expenseAccount || !expense.sub_account) return false
+
+    const allocateAmount = parseFloat(amount) || 0
+    if (allocateAmount <= 0) return false
+    if (expenseAccount.balance < allocateAmount) return false
+
+    expenseAccount.balance -= allocateAmount
+    expense.sub_account.balance += allocateAmount
+    return true
+  }
+
+  // Deallocate money from expense's sub_account back to expense account
+  function deallocateFromExpense(expenseId, amount) {
+    const expense = expenses.value.find(e => e.id === expenseId)
+    const expenseAccount = accounts.value.find(a => a.isExpenseAccount)
+
+    if (!expense || !expenseAccount || !expense.sub_account) return false
+
+    const deallocateAmount = parseFloat(amount) || 0
+    if (deallocateAmount <= 0) return false
+    if (expense.sub_account.balance < deallocateAmount) return false
+
+    expense.sub_account.balance -= deallocateAmount
+    expenseAccount.balance += deallocateAmount
+    return true
+  }
+
+  // Calculate target balance for an expense's sub-account
+  // This is how much should ideally be in the sub-account to cover the next occurrence
+  function calculateTargetBalance(expense) {
+    const amount = parseFloat(expense.amount) || 0
+    const frequency = expense.frequency || 'weekly'
+
+    if (frequency === 'weekly') {
+      // Weekly expenses: need 1 week's worth
+      return amount
+    } else if (frequency === 'fortnightly') {
+      // Fortnightly: need 2 weeks' worth
+      return amount
+    } else if (frequency === 'monthly') {
+      // Monthly: need full monthly amount
+      return amount
+    } else if (frequency === 'annually') {
+      // Annual: need full annual amount
+      return amount
+    } else if (frequency === 'one-off') {
+      // One-off: need full amount
+      return amount
+    }
+    return amount
+  }
+
+  // Calculate how much to allocate to an expense this week
+  // Returns 0 if overfunded, otherwise returns the weekly portion needed
+  function calculateWeeklyAllocation(expense) {
+    const currentBalance = parseFloat(expense.sub_account?.balance) || 0
+    const targetBalance = calculateTargetBalance(expense)
+    const weeklyNeed = getWeeklyAmount(expense)
+
+    // If already at or above target, skip allocation (overfunded)
+    if (currentBalance >= targetBalance) {
+      return 0
+    }
+
+    // Calculate deficit
+    const deficit = targetBalance - currentBalance
+
+    // Only allocate up to the deficit or the weekly need, whichever is smaller
+    return Math.min(weeklyNeed, deficit)
+  }
+
+  // Calculate the weekly allocation needed to reach target 1 week BEFORE due date
+  // This ensures funds are ready ahead of time for scheduled expenses
+  // Returns at minimum the equilibrium amount, but MORE if behind schedule on a dated expense
+  function calculateTargetDateAwareWeeklyNeed(expense) {
+    const currentBalance = parseFloat(expense.sub_account?.balance) || 0
+    const targetBalance = calculateTargetBalance(expense)
+    const frequency = expense.frequency || 'weekly'
+    const equilibriumAmount = getWeeklyAmount(expense)
+
+    // For weekly expenses, always return equilibrium - they're always "due"
+    if (frequency === 'weekly') {
+      return equilibriumAmount
+    }
+
+    // For fortnightly, always return equilibrium
+    if (frequency === 'fortnightly') {
+      return equilibriumAmount
+    }
+
+    // For expenses with specific due dates (monthly, annually, one-off)
+    if (expense.date && (frequency === 'annually' || frequency === 'monthly' || frequency === 'one-off')) {
+      const today = new Date()
+      today.setHours(0, 0, 0, 0)
+
+      // Parse the due date
+      let dueDate = new Date(expense.date)
+      dueDate.setHours(0, 0, 0, 0)
+
+      // For monthly recurring expenses, find the NEXT occurrence
+      if (frequency === 'monthly') {
+        // If the due date has passed this month, move to next month
+        if (dueDate <= today) {
+          dueDate = new Date(today.getFullYear(), today.getMonth() + 1, dueDate.getDate())
         }
-        // If expense already has a sub-account, sync the name
-        else if (expense.subAccountId) {
-          const expenseAccount = accounts.value.find(a => a.isExpenseAccount)
-          if (expenseAccount && expenseAccount.sub_accounts) {
-            const subAccount = expenseAccount.sub_accounts.find(sa => sa.id === expense.subAccountId)
-            if (subAccount) {
-              subAccount.name = value
-            }
-          }
+        // If still in the past (e.g., day already passed this month), go to next month
+        if (dueDate <= today) {
+          dueDate.setMonth(dueDate.getMonth() + 1)
         }
       }
+
+      // For annual expenses, if the date has passed this year, it's next year
+      if (frequency === 'annually' && dueDate <= today) {
+        dueDate.setFullYear(dueDate.getFullYear() + 1)
+      }
+
+      // Target: 1 week (7 days) before due date
+      const targetDate = new Date(dueDate)
+      targetDate.setDate(targetDate.getDate() - 7)
+
+      // Calculate weeks until target date
+      const diffTime = targetDate - today
+      const diffWeeks = Math.ceil(diffTime / (7 * 24 * 60 * 60 * 1000))
+      const weeksRemaining = Math.max(1, diffWeeks) // At least 1 week
+
+      // Calculate deficit (can be negative if overfunded)
+      const deficit = targetBalance - currentBalance
+
+      // If underfunded, calculate catch-up amount needed
+      if (deficit > 0) {
+        const requiredWeeklyAllocation = deficit / weeksRemaining
+        // Return the HIGHER of catch-up or equilibrium (urgency boost)
+        return Math.max(requiredWeeklyAllocation, equilibriumAmount)
+      }
+
+      // If at or above target, still return equilibrium to maintain buffer
+      return equilibriumAmount
     }
+
+    // Default: fall back to equilibrium-based allocation
+    return equilibriumAmount
+  }
+
+  // Auto-allocate a transfer amount across all expense sub-accounts
+  // Uses TARGET-DATE-AWARE allocation to ensure expenses are funded 1 week before due
+  // Distributes proportionally based on deadline-adjusted weekly needs
+  function autoAllocateTransfer(transferAmount) {
+    const expenseAccount = accounts.value.find(a => a.isExpenseAccount)
+    if (!expenseAccount) {
+      return { success: false, error: 'No expense account found', allocations: [] }
+    }
+
+    const amount = parseFloat(transferAmount) || 0
+    if (amount <= 0) {
+      return { success: false, error: 'Invalid transfer amount', allocations: [] }
+    }
+
+    // Calculate total weekly need using TARGET-DATE-AWARE allocation
+    // This ensures expenses approaching their due date get priority funding
+    let totalWeeklyNeed = 0
+    const expenseData = []
+
+    for (const expense of expenses.value) {
+      // Use target-date-aware calculation instead of simple equilibrium
+      const targetDateAwareNeed = calculateTargetDateAwareWeeklyNeed(expense)
+      const equilibriumNeed = getWeeklyAmount(expense)
+
+      // Use the higher of target-date-aware or equilibrium (ensures we never under-allocate)
+      const weeklyNeed = Math.max(targetDateAwareNeed, equilibriumNeed)
+
+      if (weeklyNeed > 0) {
+        expenseData.push({
+          expense,
+          expenseId: expense.id,
+          expenseName: expense.description || expense.name,
+          groupId: expense.groupId || 'ungrouped',
+          weeklyNeed,
+          targetDateAwareNeed,
+          equilibriumNeed,
+          currentBalance: expense.sub_account?.balance || 0,
+          targetBalance: calculateTargetBalance(expense),
+          allocated: 0
+        })
+        totalWeeklyNeed += weeklyNeed
+      }
+    }
+
+    // If no expenses with needs, all goes to unallocated
+    if (totalWeeklyNeed === 0) {
+      expenseAccount.balance += amount
+      return {
+        success: true,
+        allocations: [],
+        unallocated: amount,
+        message: 'No expenses to allocate to'
+      }
+    }
+
+    // Distribute transfer proportionally based on target-date-aware weekly needs
+    // This gives higher priority to expenses approaching their due dates
+    const allocations = []
+    let totalAllocated = 0
+
+    for (let i = 0; i < expenseData.length; i++) {
+      const data = expenseData[i]
+
+      // Calculate proportional share (last expense gets remainder to avoid rounding issues)
+      let allocation
+      if (i === expenseData.length - 1) {
+        allocation = amount - totalAllocated
+      } else {
+        allocation = Math.floor((data.weeklyNeed / totalWeeklyNeed) * amount * 100) / 100
+      }
+
+      // No cap - allow allocations beyond target to build "week ahead" buffer
+      // Previously capped at deficit, but users need up to 2x target for week-ahead funding
+      data.allocated = allocation
+
+      // Apply allocation to expense sub-account
+      if (data.expense && data.expense.sub_account) {
+        data.expense.sub_account.balance += allocation
+        totalAllocated += allocation
+      }
+
+      // Add to allocations array for return value
+      allocations.push({
+        expenseId: data.expenseId,
+        expenseName: data.expenseName,
+        groupId: data.groupId,
+        needed: data.weeklyNeed,
+        targetDateAwareNeed: data.targetDateAwareNeed,
+        equilibriumNeed: data.equilibriumNeed,
+        currentBalance: data.currentBalance,
+        targetBalance: data.targetBalance,
+        allocated: data.allocated
+      })
+    }
+
+    // Any remaining unallocated funds go to the expense account buffer
+    const unallocated = amount - totalAllocated
+    if (unallocated > 0) {
+      expenseAccount.balance += unallocated
+    }
+
+    return {
+      success: true,
+      allocations,
+      totalAllocated,
+      unallocated,
+      totalNeeded: totalWeeklyNeed,
+      message: 'Funds distributed using target-date-aware allocation (1 week early)'
+    }
+  }
+
+  // Calculate effective equilibrium using target-date-aware allocation
+  // This accounts for both overfunded accounts AND upcoming deadlines
+  function calculateEffectiveEquilibrium() {
+    let effectiveTotal = 0
+    for (const expense of expenses.value) {
+      const targetDateAwareNeed = calculateTargetDateAwareWeeklyNeed(expense)
+      const equilibriumNeed = getWeeklyAmount(expense)
+      // Use the higher of target-date-aware or equilibrium
+      effectiveTotal += Math.max(targetDateAwareNeed, equilibriumNeed)
+    }
+    return effectiveTotal
+  }
+
+  // Calculate the target-date-aware equilibrium (sum of all deadline-adjusted needs)
+  // This is the minimum transfer needed to ensure all expenses are funded 1 week early
+  function calculateTargetDateAwareEquilibrium() {
+    let total = 0
+    for (const expense of expenses.value) {
+      const targetDateAwareNeed = calculateTargetDateAwareWeeklyNeed(expense)
+      const equilibriumNeed = getWeeklyAmount(expense)
+      total += Math.max(targetDateAwareNeed, equilibriumNeed)
+    }
+    return total
   }
 
   function addAccount() {
@@ -234,61 +656,6 @@ export const useBudgetStore = defineStore('budget', () => {
       autoAllocate: true,
       sub_accounts: []
     })
-  }
-
-  function addSubAccount(parentAccountId) {
-    accountCount.value++
-    const parent = findAccountById(parentAccountId)
-    if (!parent) {
-      console.error('Parent account not found')
-      return
-    }
-
-    const subAccount = {
-      id: `subaccount-${accountCount.value}`,
-      name: '',
-      balance: 0,
-      target: null,
-      isExpenseAccount: false,
-      isSpendingAccount: false,
-      isWeekAhead: false,
-      priority: accountCount.value,
-      purpose: '',
-      startingBalanceDate: null,
-      parentAccountId: parentAccountId,
-      autoAllocate: true,
-      sub_accounts: []
-    }
-
-    if (!parent.sub_accounts) {
-      parent.sub_accounts = []
-    }
-    parent.sub_accounts.unshift(subAccount)
-  }
-
-  function removeSubAccount(parentAccountId, subAccountId) {
-    const parent = findAccountById(parentAccountId)
-    if (!parent || !parent.sub_accounts) return
-
-    const index = parent.sub_accounts.findIndex(sa => sa.id === subAccountId)
-    if (index > -1) {
-      parent.sub_accounts.splice(index, 1)
-    }
-  }
-
-  function updateSubAccount(parentAccountId, subAccountId, field, value) {
-    const parent = findAccountById(parentAccountId)
-    if (!parent || !parent.sub_accounts) return
-
-    const subAccount = parent.sub_accounts.find(sa => sa.id === subAccountId)
-    if (subAccount) {
-      // Handle NaN values for numeric fields
-      if ((field === 'balance' || field === 'target') && (isNaN(value) || value === null || value === undefined)) {
-        subAccount[field] = 0
-      } else {
-        subAccount[field] = value
-      }
-    }
   }
 
   function findAccountById(accountId) {
@@ -319,53 +686,6 @@ export const useBudgetStore = defineStore('budget', () => {
       } else {
         account[field] = value
       }
-    }
-  }
-
-  // Migration: Create sub-accounts for expenses that don't have them
-  function migrateExpensesToSubAccounts() {
-    const expenseAccount = accounts.value.find(a => a.isExpenseAccount)
-    if (!expenseAccount) return
-
-    if (!expenseAccount.sub_accounts) {
-      expenseAccount.sub_accounts = []
-    }
-
-    let migrated = 0
-    expenses.value.forEach(expense => {
-      // Skip if expense already has a sub-account
-      if (expense.subAccountId) return
-
-      // Skip if expense has no name (will be created when user adds a name)
-      if (!expense.name || !expense.name.trim()) return
-
-      // Create sub-account for this expense
-      accountCount.value++
-      const subAccountId = `subaccount-${accountCount.value}`
-
-      const subAccount = {
-        id: subAccountId,
-        name: expense.name,
-        balance: 0,
-        target: null,
-        isExpenseAccount: false,
-        isSpendingAccount: false,
-        isWeekAhead: false,
-        priority: accountCount.value,
-        purpose: '',
-        startingBalanceDate: null,
-        parentAccountId: expenseAccount.id,
-        autoAllocate: true,
-        sub_accounts: []
-      }
-
-      expenseAccount.sub_accounts.push(subAccount)
-      expense.subAccountId = subAccountId
-      migrated++
-    })
-
-    if (migrated > 0) {
-      console.log(`Migrated ${migrated} expenses to sub-accounts`)
     }
   }
 
@@ -401,6 +721,9 @@ export const useBudgetStore = defineStore('budget', () => {
 
     expenses.value = []
     expenseCount.value = 0
+
+    expenseGroups.value = []
+    expenseGroupCount.value = 0
 
     accounts.value = []
     accountCount.value = 0
@@ -446,26 +769,36 @@ export const useBudgetStore = defineStore('budget', () => {
         let frequency = expense.period || 'weekly'
         if (frequency === 'annual') frequency = 'annually'
 
+        // Handle virtual sub_account (new format has embedded sub_account)
+        const subAccount = expense.sub_account || { balance: 0 }
+
         const transformed = {
-          id: `expense-${Date.now()}-${index}`,
+          id: expense.id || `expense-${Date.now()}-${index}`,
           name: expense.description || '',
           amount: parseFloat(expense.amount) || 0,
           frequency,
           date: expense.date || null,
-          subAccountId: expense.subAccountId || expense.account_id || null
-        }
-
-        // Debug logging for annual expenses
-        if (expense.period === 'annual') {
-          console.log(`Transformed expense: ${expense.description}`, {
-            original: expense.period,
-            transformed: transformed.frequency
-          })
+          groupId: expense.groupId || null,
+          sub_account: {
+            balance: parseFloat(subAccount.balance) || 0
+          }
         }
 
         return transformed
       })
       expenseCount.value = expenses.value.length
+    }
+
+    // Load expense groups
+    const backendExpenseGroups = data.expenseGroups || []
+    if (Array.isArray(backendExpenseGroups)) {
+      expenseGroups.value = backendExpenseGroups.map((group, index) => ({
+        id: group.id || `group-${Date.now()}-${index}`,
+        name: group.name || '',
+        color: group.color || '#4CAF50',
+        order: group.order || index + 1
+      }))
+      expenseGroupCount.value = expenseGroups.value.length
     }
 
     // Transform accounts
@@ -674,20 +1007,14 @@ export const useBudgetStore = defineStore('budget', () => {
       }
     }
 
-    // Get starting balance - aggregate from sub-accounts if they exist
-    let startingBalance = 0
-    if (expenseAccount.sub_accounts && expenseAccount.sub_accounts.length > 0) {
-      // Calculate total from all sub-accounts
-      startingBalance = expenseAccount.sub_accounts.reduce((total, sub) => {
-        return total + (parseFloat(sub.balance) || 0)
-      }, 0)
-    } else {
-      // Fall back to parent account balance if no sub-accounts
-      if (expenseAccount.balance !== null && expenseAccount.balance !== undefined) {
-        startingBalance = parseFloat(expenseAccount.balance)
-        if (isNaN(startingBalance)) startingBalance = 0
-      }
-    }
+    // Get starting balance from expense account plus all virtual sub-account balances
+    let startingBalance = parseFloat(expenseAccount.balance) || 0
+
+    // Add all virtual sub-account balances (embedded in expenses)
+    const totalSubAccountBalance = expenses.value.reduce((total, expense) => {
+      return total + (parseFloat(expense.sub_account?.balance) || 0)
+    }, 0)
+    startingBalance += totalSubAccountBalance
 
     // Parse starting date as local date to avoid timezone issues
     let startingDate
@@ -764,11 +1091,34 @@ export const useBudgetStore = defineStore('budget', () => {
     const maxSingleWeekExpense = Math.max(...weeklyRequirements.map(w => w.totalExpensesDue))
     const minBufferNeeded = maxSingleWeekExpense - equilibriumTransfer
 
+    // Calculate week-ahead deficit for each expense
+    // For weekly expenses: need 2x weekly amount (this week + next week ready)
+    // For dated expenses: need full target amount by 1 week before due date
+    let totalWeekAheadDeficit = 0
+    for (const expense of expenses.value) {
+      const currentBalance = parseFloat(expense.sub_account?.balance) || 0
+      const weeklyAmount = getWeeklyAmount(expense)
+      const frequency = expense.frequency || 'weekly'
+
+      let targetForWeekAhead
+      if (frequency === 'weekly' || frequency === 'fortnightly') {
+        // Weekly/fortnightly: need 2x the weekly amount
+        targetForWeekAhead = weeklyAmount * 2
+      } else {
+        // Dated expenses: use existing target (already accounts for due date)
+        targetForWeekAhead = calculateTargetBalance(expense)
+      }
+
+      const deficit = Math.max(0, targetForWeekAhead - currentBalance)
+      totalWeekAheadDeficit += deficit
+    }
+
     // Calculate catch-up schedule
     const schedule = []
     let currentBalance = startingBalance
     let equilibriumReached = false
     let equilibriumWeek = null
+    let cumulativeCatchUpPaid = 0
 
     for (let weekIndex = 0; weekIndex < weeklyRequirements.length; weekIndex++) {
       const week = weeklyRequirements[weekIndex]
@@ -810,12 +1160,21 @@ export const useBudgetStore = defineStore('budget', () => {
           testBalance += equilibriumTransfer
         }
 
-        if (maxDeficit > 0) {
+        // Calculate remaining week-ahead deficit (accounts still need to reach 2x)
+        const remainingWeekAheadDeficit = Math.max(0, totalWeekAheadDeficit - cumulativeCatchUpPaid)
+
+        // Need catch-up if EITHER:
+        // 1. We'd face a balance deficit in future weeks, OR
+        // 2. We haven't paid enough catch-up for all accounts to reach their week-ahead targets
+        const totalDeficit = Math.max(maxDeficit, remainingWeekAheadDeficit)
+
+        if (totalDeficit > 0) {
           // Need to catch up - transfer equilibrium + deficit (capped to max catch-up extra)
-          const catchUpExtra = Math.min(maxDeficit, maxCatchUpExtra)
+          const catchUpExtra = Math.min(totalDeficit, maxCatchUpExtra)
           transferAmount = equilibriumTransfer + catchUpExtra
+          cumulativeCatchUpPaid += catchUpExtra
         } else {
-          // No deficit - equilibrium reached
+          // No deficit AND all accounts at week-ahead target - true equilibrium reached
           equilibriumReached = true
           equilibriumWeek = weekIndex + 1
           transferAmount = equilibriumTransfer
@@ -862,37 +1221,34 @@ export const useBudgetStore = defineStore('budget', () => {
 
   function getBudgetData() {
     // Transform expenses from frontend format to backend format
+    // Now includes embedded sub_account (virtual sub-account model)
     const transformedExpenses = expenses.value.map(expense => {
       // Normalize 'annually' to 'annual' for backend
       let period = expense.frequency || expense.period || 'weekly'
       if (period === 'annually') period = 'annual'
 
       return {
+        id: expense.id,
         description: expense.name || expense.description || '',
         amount: expense.amount || 0,
         period,
         date: expense.date || null,
         dayOfWeek: null,
-        dayOfMonth: null
+        dayOfMonth: null,
+        groupId: expense.groupId || null,
+        sub_account: {
+          balance: expense.sub_account?.balance || 0
+        }
       }
     })
 
-    // Transform accounts - deduplicate sub_accounts by ID to prevent duplicates
+    // Transform accounts - expense account no longer has sub_accounts (they're embedded in expenses)
     const transformedAccounts = accounts.value.map(account => {
       const accountCopy = { ...account }
-
-      // Deduplicate sub_accounts by ID
-      if (accountCopy.sub_accounts && accountCopy.sub_accounts.length > 0) {
-        const seenIds = new Set()
-        accountCopy.sub_accounts = accountCopy.sub_accounts.filter(subAcc => {
-          if (seenIds.has(subAcc.id)) {
-            return false // Skip duplicate
-          }
-          seenIds.add(subAcc.id)
-          return true
-        })
+      // Clear sub_accounts from expense account (virtual sub-accounts are now in expenses)
+      if (accountCopy.isExpenseAccount) {
+        accountCopy.sub_accounts = []
       }
-
       return accountCopy
     })
 
@@ -914,6 +1270,7 @@ export const useBudgetStore = defineStore('budget', () => {
       studentLoan: studentLoan.value,
       ietcEligible: ietcEligible.value,
       expenses: transformedExpenses,
+      expenseGroups: expenseGroups.value,
       accounts: transformedAccounts,
       savingsTarget: savingsTarget.value,
       savingsDeadline: savingsDeadline.value,
@@ -950,6 +1307,345 @@ export const useBudgetStore = defineStore('budget', () => {
     }
   }
 
+  // ============================================
+  // AUTOMATION FUNCTIONS
+  // ============================================
+
+  // Load automation state from backend
+  async function loadAutomationState() {
+    try {
+      const state = await automationAPI.getState()
+      automationState.value = {
+        lastTransferDate: state.lastTransferDate,
+        lastExpenseCheckDate: state.lastExpenseCheckDate,
+        autoTransferEnabled: state.autoTransferEnabled,
+        autoExpenseEnabled: state.autoExpenseEnabled
+      }
+      return automationState.value
+    } catch (error) {
+      console.error('Error loading automation state:', error)
+      throw error
+    }
+  }
+
+  // Update automation state on backend
+  async function updateAutomationState(updates) {
+    try {
+      await automationAPI.updateState(updates)
+      // Update local state
+      Object.assign(automationState.value, updates)
+    } catch (error) {
+      console.error('Error updating automation state:', error)
+      throw error
+    }
+  }
+
+  // Check for pending automation actions
+  async function checkPendingActions() {
+    try {
+      const pending = await automationAPI.getPending()
+      pendingActions.value = {
+        transfer: pending.pendingTransfer,
+        expenses: pending.pendingExpenses || [],
+        hasActions: pending.hasActions
+      }
+      return pendingActions.value
+    } catch (error) {
+      console.error('Error checking pending actions:', error)
+      throw error
+    }
+  }
+
+  // Get Monday of a given week
+  function getMonday(date) {
+    const d = new Date(date)
+    const day = d.getDay()
+    const diff = d.getDate() - day + (day === 0 ? -6 : 1)
+    d.setDate(diff)
+    d.setHours(0, 0, 0, 0)
+    return d
+  }
+
+  // Helper to get day of month from expense (uses dueDate if set, otherwise extracts from date field)
+  function getDueDayOfMonth(expense) {
+    if (expense.dueDate !== undefined) return expense.dueDate
+    if (expense.date) {
+      const d = new Date(expense.date)
+      return d.getDate()
+    }
+    return 1 // Default to 1st of month
+  }
+
+  // Calculate next due date for an expense
+  function calculateNextDueDate(expense, fromDate = new Date()) {
+    const from = new Date(fromDate)
+    const frequency = expense.frequency || 'weekly'
+    const dueDay = expense.dueDay !== undefined ? expense.dueDay : 1 // Default Monday
+    const dueDateOfMonth = getDueDayOfMonth(expense)
+
+    switch (frequency) {
+      case 'weekly': {
+        const result = new Date(from)
+        const currentDay = result.getDay()
+        let daysUntil = dueDay - currentDay
+        if (daysUntil <= 0) daysUntil += 7
+        result.setDate(result.getDate() + daysUntil)
+        return result
+      }
+      case 'fortnightly': {
+        const result = new Date(from)
+        const currentDay = result.getDay()
+        let daysUntil = dueDay - currentDay
+        if (daysUntil <= 0) daysUntil += 7
+        result.setDate(result.getDate() + daysUntil)
+        return result
+      }
+      case 'monthly': {
+        const result = new Date(from)
+        result.setDate(dueDateOfMonth)
+        if (result <= from) {
+          result.setMonth(result.getMonth() + 1)
+        }
+        return result
+      }
+      case 'annually':
+      case 'one-off':
+        if (expense.date) {
+          const targetDate = new Date(expense.date)
+          if (targetDate > from) return targetDate
+        }
+        return null
+      default:
+        return null
+    }
+  }
+
+  // Calculate due dates between two dates for an expense
+  function calculateDueDatesBetween(expense, startDate, endDate) {
+    const dueDates = []
+    const start = new Date(startDate)
+    const end = new Date(endDate)
+    const frequency = expense.frequency || 'weekly'
+    const dueDay = expense.dueDay !== undefined ? expense.dueDay : 1
+    const dueDateOfMonth = getDueDayOfMonth(expense)
+
+    if (frequency === 'weekly') {
+      let current = calculateNextDueDate(expense, start)
+      while (current && current <= end) {
+        dueDates.push(new Date(current))
+        current.setDate(current.getDate() + 7)
+      }
+    } else if (frequency === 'fortnightly') {
+      let current = calculateNextDueDate(expense, start)
+      while (current && current <= end) {
+        dueDates.push(new Date(current))
+        current.setDate(current.getDate() + 14)
+      }
+    } else if (frequency === 'monthly') {
+      let current = new Date(start)
+      current.setDate(dueDateOfMonth)
+      if (current <= start) {
+        current.setMonth(current.getMonth() + 1)
+      }
+      while (current <= end) {
+        dueDates.push(new Date(current))
+        current.setMonth(current.getMonth() + 1)
+      }
+    } else if (frequency === 'annually' || frequency === 'one-off') {
+      if (expense.date) {
+        const targetDate = new Date(expense.date)
+        if (targetDate > start && targetDate <= end) {
+          dueDates.push(targetDate)
+        }
+      }
+    }
+
+    return dueDates
+  }
+
+  // Process a single expense payment
+  async function processExpensePayment(expenseId, options = {}) {
+    const expense = expenses.value.find(e => e.id === expenseId)
+    if (!expense) throw new Error('Expense not found')
+
+    const amount = options.amount !== undefined ? options.amount : expense.amount
+    const balanceBefore = expense.sub_account?.balance || 0
+
+    // Deduct from sub-account (allow negative)
+    if (!expense.sub_account) {
+      expense.sub_account = { balance: 0 }
+    }
+    expense.sub_account.balance -= amount
+    const balanceAfter = expense.sub_account.balance
+
+    // If sub-account went negative and there's unallocated funds, use them
+    if (balanceAfter < 0) {
+      const expenseAccount = accounts.value.find(a => a.isExpenseAccount)
+      if (expenseAccount && expenseAccount.balance > 0) {
+        const borrowAmount = Math.min(Math.abs(balanceAfter), expenseAccount.balance)
+        expenseAccount.balance -= borrowAmount
+        expense.sub_account.balance += borrowAmount
+      }
+    }
+
+    // Record payment in backend
+    try {
+      const response = await paymentAPI.recordPayment(expenseId, {
+        amount,
+        dueDate: options.dueDate || formatDateLocal(new Date()),
+        paymentType: options.paymentType || 'automatic',
+        notes: options.notes || '',
+        balanceBefore,
+        balanceAfter: expense.sub_account.balance
+      })
+      return response
+    } catch (error) {
+      console.error('Error recording payment:', error)
+      throw error
+    }
+  }
+
+  // Skip a scheduled expense payment
+  async function skipExpensePayment(expenseId, reason = '') {
+    const expense = expenses.value.find(e => e.id === expenseId)
+    if (!expense) throw new Error('Expense not found')
+
+    try {
+      const response = await paymentAPI.skipPayment(expenseId, {
+        dueDate: formatDateLocal(new Date()),
+        reason
+      })
+      return response
+    } catch (error) {
+      console.error('Error skipping payment:', error)
+      throw error
+    }
+  }
+
+  // Process all pending automation actions
+  async function processAutomation() {
+    const today = new Date()
+    const todayStr = formatDateLocal(today)
+    const results = {
+      transfersProcessed: [],
+      expensesProcessed: [],
+      errors: []
+    }
+
+    // Load current state if not loaded
+    if (!automationState.value.lastTransferDate && !automationState.value.lastExpenseCheckDate) {
+      await loadAutomationState()
+    }
+
+    // 1. Process weekly transfer if it's a new week and auto-transfer is enabled
+    if (automationState.value.autoTransferEnabled) {
+      const lastTransfer = automationState.value.lastTransferDate
+      const lastMonday = lastTransfer ? getMonday(new Date(lastTransfer)) : new Date(0)
+      const thisMonday = getMonday(today)
+
+      if (thisMonday > lastMonday) {
+        try {
+          // Calculate transfer amount using equilibrium
+          const equilibrium = totalExpenses.value
+
+          // Execute auto-allocation
+          const allocationResult = autoAllocateTransfer(equilibrium)
+
+          results.transfersProcessed.push({
+            weekDate: formatDateLocal(thisMonday),
+            amount: equilibrium,
+            allocations: allocationResult.allocations,
+            unallocated: allocationResult.unallocated
+          })
+
+          // Update last transfer date
+          await updateAutomationState({
+            lastTransferDate: formatDateLocal(thisMonday)
+          })
+        } catch (error) {
+          results.errors.push({ type: 'transfer', error: error.message })
+        }
+      }
+    }
+
+    // 2. Process due expenses if auto-expense is enabled
+    if (automationState.value.autoExpenseEnabled) {
+      const lastCheckDate = automationState.value.lastExpenseCheckDate
+        ? new Date(automationState.value.lastExpenseCheckDate)
+        : new Date(0)
+
+      for (const expense of expenses.value) {
+        if (expense.autoPayEnabled === false) continue
+
+        const dueDates = calculateDueDatesBetween(expense, lastCheckDate, today)
+
+        for (const dueDate of dueDates) {
+          try {
+            const paymentResult = await processExpensePayment(expense.id, {
+              dueDate: formatDateLocal(dueDate),
+              paymentType: 'automatic'
+            })
+            results.expensesProcessed.push({
+              expenseId: expense.id,
+              expenseName: expense.name,
+              amount: expense.amount,
+              dueDate: formatDateLocal(dueDate),
+              payment: paymentResult
+            })
+          } catch (error) {
+            results.errors.push({
+              type: 'expense',
+              expenseId: expense.id,
+              expenseName: expense.name,
+              error: error.message
+            })
+          }
+        }
+      }
+
+      // Update last expense check date
+      await updateAutomationState({
+        lastExpenseCheckDate: todayStr
+      })
+    }
+
+    // Refresh pending actions
+    await checkPendingActions()
+
+    return results
+  }
+
+  // Load payment history
+  async function loadPaymentHistory(options = {}) {
+    try {
+      const response = await paymentAPI.getHistory(options)
+      recentPayments.value = response.payments
+      return response
+    } catch (error) {
+      console.error('Error loading payment history:', error)
+      throw error
+    }
+  }
+
+  // Toggle auto-transfer setting
+  async function toggleAutoTransfer(enabled) {
+    await updateAutomationState({ autoTransferEnabled: enabled })
+  }
+
+  // Toggle auto-expense payment setting
+  async function toggleAutoExpense(enabled) {
+    await updateAutomationState({ autoExpenseEnabled: enabled })
+  }
+
+  // Migrate expenses to ensure they all have sub_account objects
+  function migrateExpensesToSubAccounts() {
+    for (const expense of expenses.value) {
+      if (!expense.sub_account) {
+        expense.sub_account = { balance: 0 }
+      }
+    }
+  }
+
   return {
     // State
     budgetId,
@@ -969,6 +1665,8 @@ export const useBudgetStore = defineStore('budget', () => {
     ietcEligible,
     expenses,
     expenseCount,
+    expenseGroups,
+    expenseGroupCount,
     accounts,
     accountCount,
     savingsTarget,
@@ -982,25 +1680,48 @@ export const useBudgetStore = defineStore('budget', () => {
     results,
     hasCalculated,
 
+    // Automation state
+    automationState,
+    pendingActions,
+    recentPayments,
+
     // Computed
     totalExpenses,
     totalAccountAllocations,
     weeklyGrossIncome,
     weeklyNetIncome,
     weeklyDiscretionary,
+    estimatedAnnualIncome,
+    isIetcIncomeEligible,
+    groupedExpenses,
+    groupOptions,
+
+    // Helper functions (exposed for use in components)
+    getWeeklyAmount,
+    weeksUntilDate,
+    calculateTargetBalance,
+    calculateWeeklyAllocation,
+    calculateEffectiveEquilibrium,
+    calculateTargetDateAwareWeeklyNeed,
+    calculateTargetDateAwareEquilibrium,
 
     // Actions
     addExpense,
     removeExpense,
     updateExpense,
+    updateExpenseSubAccountBalance,
+    addExpenseGroup,
+    updateExpenseGroup,
+    removeExpenseGroup,
+    assignExpenseToGroup,
+    reorderExpenseGroups,
+    allocateToExpense,
+    deallocateFromExpense,
+    autoAllocateTransfer,
     addAccount,
     removeAccount,
     updateAccount,
-    addSubAccount,
-    removeSubAccount,
-    updateSubAccount,
     findAccountById,
-    migrateExpensesToSubAccounts,
     setResults,
     clearResults,
     reset,
@@ -1011,6 +1732,20 @@ export const useBudgetStore = defineStore('budget', () => {
     calculateGoalTimeline,
     createGoalTransfers,
     loadBudgetData,
-    getBudgetData
+    getBudgetData,
+
+    // Automation actions
+    loadAutomationState,
+    updateAutomationState,
+    checkPendingActions,
+    processAutomation,
+    processExpensePayment,
+    skipExpensePayment,
+    loadPaymentHistory,
+    toggleAutoTransfer,
+    toggleAutoExpense,
+    migrateExpensesToSubAccounts,
+    calculateNextDueDate,
+    calculateDueDatesBetween
   }
 })

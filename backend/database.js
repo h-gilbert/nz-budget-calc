@@ -84,6 +84,12 @@ function initializeDatabase() {
             db.exec(`ALTER TABLE budget_data ADD COLUMN transfer_frequency TEXT DEFAULT 'weekly'`);
             console.log('✓ transfer_frequency column added');
         }
+
+        if (!tableInfo.some(col => col.name === 'expense_groups')) {
+            console.log('Adding expense_groups column to budget_data table...');
+            db.exec(`ALTER TABLE budget_data ADD COLUMN expense_groups TEXT`);
+            console.log('✓ expense_groups column added');
+        }
     } catch (error) {
         console.error('Migration error:', error);
     }
@@ -254,6 +260,42 @@ function initializeDatabase() {
         )
     `);
 
+    // Automation state table - tracks when automations were last processed
+    db.exec(`
+        CREATE TABLE IF NOT EXISTS automation_state (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL UNIQUE,
+            last_transfer_date DATE,
+            last_expense_check_date DATE,
+            auto_transfer_enabled BOOLEAN DEFAULT 1,
+            auto_expense_enabled BOOLEAN DEFAULT 1,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+    `);
+
+    // Payment history table - tracks all expense payments (automatic and manual)
+    db.exec(`
+        CREATE TABLE IF NOT EXISTS payment_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            expense_id TEXT NOT NULL,
+            expense_name TEXT NOT NULL,
+            amount_due REAL NOT NULL,
+            amount_paid REAL NOT NULL,
+            payment_date DATE NOT NULL,
+            due_date DATE NOT NULL,
+            payment_type TEXT NOT NULL,
+            balance_before REAL,
+            balance_after REAL,
+            went_negative BOOLEAN DEFAULT 0,
+            notes TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+    `);
+
     // Create indexes
     db.exec(`
         CREATE INDEX IF NOT EXISTS idx_accounts_user_id ON accounts(user_id);
@@ -268,6 +310,10 @@ function initializeDatabase() {
         CREATE INDEX IF NOT EXISTS idx_transfers_user_id ON transfers(user_id);
         CREATE INDEX IF NOT EXISTS idx_transfers_scheduled_date ON transfers(scheduled_date);
         CREATE INDEX IF NOT EXISTS idx_transfers_status ON transfers(status);
+        CREATE INDEX IF NOT EXISTS idx_automation_state_user_id ON automation_state(user_id);
+        CREATE INDEX IF NOT EXISTS idx_payment_history_user_id ON payment_history(user_id);
+        CREATE INDEX IF NOT EXISTS idx_payment_history_expense_id ON payment_history(expense_id);
+        CREATE INDEX IF NOT EXISTS idx_payment_history_payment_date ON payment_history(payment_date);
     `);
 
     console.log('Database initialized successfully');

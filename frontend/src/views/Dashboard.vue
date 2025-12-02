@@ -33,6 +33,9 @@
         <CashFlowCard />
       </div>
 
+      <!-- Automation Dashboard -->
+      <AutomationDashboard />
+
       <!-- Goal Timeline Planner Card -->
       <GoalTimelineCard />
 
@@ -54,6 +57,7 @@ import ExpensesCard from '@/components/dashboard/ExpensesCard.vue'
 import CashFlowCard from '@/components/dashboard/CashFlowCard.vue'
 import GoalTimelineCard from '@/components/dashboard/GoalTimelineCard.vue'
 import TransferPlanningCard from '@/components/dashboard/TransferPlanningCard.vue'
+import AutomationDashboard from '@/components/dashboard/AutomationDashboard.vue'
 
 const router = useRouter()
 const budgetStore = useBudgetStore()
