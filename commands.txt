@@ -6,11 +6,13 @@ Separate commands to run on local computer and commands to run on a server or an
 
 Please overwrite everything below this line. Don't overwrite this line or above.
 
-cd ~/Downloads/Projects/nz-budget-calculator && scp backend/fix-expense-subaccount-links.js root@192.168.1.2:/mnt/user/appdata/nz-budget-calculator/backend/
+LOCAL (run on your Mac):
+cd ~/Downloads/Projects/nz-budget-calculator && scp backend/budget.db root@192.168.1.2:/mnt/user/appdata/nz-budget-calculator/
 
+SERVER (after scp completes):
 cd /mnt/user/appdata/nz-budget-calculator
-docker cp backend/fix-expense-subaccount-links.js budget-backend:/app/
-docker exec budget-backend node /app/fix-expense-subaccount-links.js
-docker restart budget-backend
+docker-compose -f docker-compose.production.yml down
+docker run --rm -v nz-budget-calculator_budget-data:/data -v $(pwd):/backup alpine cp /backup/budget.db /data/budget.db
+docker-compose -f docker-compose.production.yml up -d
 sleep 5
 docker logs --tail 20 budget-backend
