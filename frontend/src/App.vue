@@ -1,6 +1,9 @@
 <template>
   <div id="app">
-    <Navigation @openLogin="showLoginModal = true" />
+    <Navigation
+      @openLogin="showLoginModal = true"
+      @openChangePassword="showChangePasswordModal = true"
+    />
 
     <main>
       <router-view v-slot="{ Component }">
@@ -11,6 +14,7 @@
     </main>
 
     <LoginModal v-model="showLoginModal" @loginSuccess="handleLoginSuccess" />
+    <ChangePasswordModal v-model="showChangePasswordModal" />
     <LoadingBar />
     <SaveIndicator />
   </div>
@@ -22,11 +26,13 @@ import { useUserStore } from '@stores/user'
 import { authAPI } from '@api/client'
 import Navigation from '@components/ui/Navigation.vue'
 import LoginModal from '@components/ui/LoginModal.vue'
+import ChangePasswordModal from '@components/ui/ChangePasswordModal.vue'
 import LoadingBar from '@components/ui/LoadingBar.vue'
 import SaveIndicator from '@components/ui/SaveIndicator.vue'
 
 const userStore = useUserStore()
 const showLoginModal = ref(false)
+const showChangePasswordModal = ref(false)
 
 async function handleLoginSuccess() {
   // Optionally reload user data or budgets here

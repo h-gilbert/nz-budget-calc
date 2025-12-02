@@ -56,6 +56,10 @@ export const authAPI = {
 
   async getCurrentUser() {
     return apiClient.get('/verify')
+  },
+
+  async changePassword(currentPassword, newPassword) {
+    return apiClient.post('/change-password', { currentPassword, newPassword })
   }
 }
 

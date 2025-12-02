@@ -122,6 +122,45 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
+// Change password endpoint
+app.post('/api/change-password', authenticateToken, async (req, res) => {
+    try {
+        const { userId } = req.user;
+        const { currentPassword, newPassword } = req.body;
+
+        if (!currentPassword || !newPassword) {
+            return res.status(400).json({ error: 'Current password and new password are required' });
+        }
+
+        if (newPassword.length < 6) {
+            return res.status(400).json({ error: 'New password must be at least 6 characters' });
+        }
+
+        // Get user's current password hash
+        const user = db.prepare('SELECT password FROM users WHERE id = ?').get(userId);
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        // Verify current password
+        const passwordMatch = await bcrypt.compare(currentPassword, user.password);
+        if (!passwordMatch) {
+            return res.status(401).json({ error: 'Current password is incorrect' });
+        }
+
+        // Hash new password
+        const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+        // Update password
+        db.prepare('UPDATE users SET password = ? WHERE id = ?').run(hashedPassword, userId);
+
+        res.json({ message: 'Password changed successfully' });
+    } catch (error) {
+        console.error('Change password error:', error);
+        res.status(500).json({ error: 'Server error during password change' });
+    }
+});
+
 // Save budget data (create or update)
 app.post('/api/budget/save', authenticateToken, (req, res) => {
     try {

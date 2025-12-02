@@ -13,6 +13,9 @@
 
         <div v-if="userStore.isAuthenticated" class="user-menu">
           <span class="user-info">{{ userStore.username }}</span>
+          <button @click="emit('openChangePassword')" class="btn btn-ghost btn-sm">
+            Change Password
+          </button>
           <button @click="handleLogout" class="btn btn-secondary btn-sm">
             Logout
           </button>
@@ -46,6 +49,9 @@
 
         <div v-if="userStore.isAuthenticated" class="mobile-user-section">
           <span class="mobile-user-info">{{ userStore.username }}</span>
+          <button @click="emit('openChangePassword'); mobileMenuOpen = false" class="btn btn-ghost btn-sm">
+            Change Password
+          </button>
           <button @click="handleLogout" class="btn btn-secondary btn-sm">
             Logout
           </button>
@@ -64,7 +70,7 @@ import { useRouter } from 'vue-router'
 import { useUserStore } from '@stores/user'
 import { useNotificationStore } from '@stores/notification'
 
-const emit = defineEmits(['openLogin'])
+const emit = defineEmits(['openLogin', 'openChangePassword'])
 
 const router = useRouter()
 const userStore = useUserStore()
@@ -186,6 +192,17 @@ function handleLogout() {
 
 .btn-secondary:hover {
   background: var(--bg-hover);
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--text-secondary);
+  border: none;
+}
+
+.btn-ghost:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 
 .mobile-menu-btn {
