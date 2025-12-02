@@ -32,13 +32,11 @@ jobs:
         chmod 600 ~/.ssh/id_rsa
         ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts
         # Prevent SSH timeout during long operations
-        cat > ~/.ssh/config << 'SSHCONFIG'
-Host *
-  ServerAliveInterval 15
-  ServerAliveCountMax 20
-  TCPKeepAlive yes
-  ConnectionAttempts 3
-SSHCONFIG
+        echo "Host *" > ~/.ssh/config
+        echo "  ServerAliveInterval 15" >> ~/.ssh/config
+        echo "  ServerAliveCountMax 20" >> ~/.ssh/config
+        echo "  TCPKeepAlive yes" >> ~/.ssh/config
+        echo "  ConnectionAttempts 3" >> ~/.ssh/config
         chmod 600 ~/.ssh/config
 
     - name: Deploy to Server
