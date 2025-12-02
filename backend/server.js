@@ -17,10 +17,10 @@ app.use(bodyParser.json());
 app.get('/health', (req, res) => {
     res.status(200).json({
         status: 'ok',
-        version: '1.0.1',
+        version: '1.1.0',
         timestamp: new Date().toISOString(),
         uptime: process.uptime(),
-        message: 'GitHub Actions deployment successful! 🚀'
+        message: 'Password change & automation features deployed! 🚀'
     });
 });
 
