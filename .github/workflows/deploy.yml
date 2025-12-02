@@ -32,12 +32,14 @@ jobs:
         chmod 600 ~/.ssh/id_rsa
         ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts
         # Prevent SSH timeout during long operations
-        cat >> ~/.ssh/config << EOF
-        Host *
-          ServerAliveInterval 30
-          ServerAliveCountMax 10
-          TCPKeepAlive yes
-        EOF
+        cat > ~/.ssh/config << 'SSHCONFIG'
+Host *
+  ServerAliveInterval 15
+  ServerAliveCountMax 20
+  TCPKeepAlive yes
+  ConnectionAttempts 3
+SSHCONFIG
+        chmod 600 ~/.ssh/config
 
     - name: Deploy to Server
       env:
@@ -81,7 +83,7 @@ jobs:
         docker-compose -f docker-compose.production.yml build --no-cache
 
         echo "🔄 Restarting backend container..."
-        docker-compose -f docker-compose.production.yml down
+        docker-compose -f docker-compose.production.yml down --timeout 30 || true
         docker-compose -f docker-compose.production.yml up -d
 
         # Wait for backend to be healthy
