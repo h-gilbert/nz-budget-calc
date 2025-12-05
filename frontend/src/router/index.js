@@ -3,6 +3,7 @@ import Home from '@/views/Home.vue'
 import Calculator from '@/views/Calculator.vue'
 import Dashboard from '@/views/Dashboard.vue'
 import Accounts from '@/views/Accounts.vue'
+import Transactions from '@/views/Transactions.vue'
 
 const routes = [
   {
@@ -24,6 +25,11 @@ const routes = [
     path: '/accounts',
     name: 'Accounts',
     component: Accounts
+  },
+  {
+    path: '/transactions',
+    name: 'Transactions',
+    component: Transactions
   }
 ]
 

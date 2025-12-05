@@ -9,6 +9,7 @@
         <router-link to="/" class="nav-link">Home</router-link>
         <router-link to="/calculator" class="nav-link">Budget Setup</router-link>
         <router-link to="/accounts" class="nav-link">Accounts</router-link>
+        <router-link to="/transactions" class="nav-link">Transactions</router-link>
         <router-link to="/dashboard" class="nav-link">Dashboard</router-link>
 
         <div v-if="userStore.isAuthenticated" class="user-menu" v-click-outside="() => userDropdownOpen = false">
@@ -63,6 +64,7 @@
         <router-link to="/" class="mobile-link" @click="mobileMenuOpen = false">Home</router-link>
         <router-link to="/calculator" class="mobile-link" @click="mobileMenuOpen = false">Budget Setup</router-link>
         <router-link to="/accounts" class="mobile-link" @click="mobileMenuOpen = false">Accounts</router-link>
+        <router-link to="/transactions" class="mobile-link" @click="mobileMenuOpen = false">Transactions</router-link>
         <router-link to="/dashboard" class="mobile-link" @click="mobileMenuOpen = false">Dashboard</router-link>
 
         <div v-if="userStore.isAuthenticated" class="mobile-user-section">

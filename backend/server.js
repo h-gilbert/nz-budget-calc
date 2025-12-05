@@ -1275,6 +1275,78 @@ app.delete('/api/transactions/:id', authenticateToken, (req, res) => {
     }
 });
 
+// Update transaction
+app.put('/api/transactions/:id', authenticateToken, (req, res) => {
+    try {
+        const userId = req.user.userId;
+        const transactionId = req.params.id;
+        const { amount, transaction_date, transaction_type, account_id, description, category } = req.body;
+
+        // Get existing transaction
+        const existingTransaction = db.prepare('SELECT * FROM transactions WHERE id = ? AND user_id = ?')
+            .get(transactionId, userId);
+
+        if (!existingTransaction) {
+            return res.status(404).json({ error: 'Transaction not found' });
+        }
+
+        // Validate transaction_type if provided
+        if (transaction_type && !['income', 'expense', 'transfer'].includes(transaction_type)) {
+            return res.status(400).json({ error: 'Invalid transaction type' });
+        }
+
+        // If account_id is provided, verify it belongs to the user
+        if (account_id) {
+            const account = db.prepare('SELECT id FROM accounts WHERE id = ? AND user_id = ?')
+                .get(account_id, userId);
+            if (!account) {
+                return res.status(400).json({ error: 'Invalid account' });
+            }
+        }
+
+        // Determine new values (use existing if not provided)
+        const newAmount = amount !== undefined ? amount : existingTransaction.amount;
+        const newType = transaction_type || existingTransaction.transaction_type;
+        const newAccountId = account_id !== undefined ? account_id : existingTransaction.account_id;
+        const newDate = transaction_date || existingTransaction.transaction_date;
+        const newDescription = description !== undefined ? description : existingTransaction.description;
+        const newCategory = category !== undefined ? category : existingTransaction.category;
+
+        // Reverse old balance effect on old account
+        if (existingTransaction.account_id) {
+            const oldReversal = existingTransaction.transaction_type === 'income'
+                ? -existingTransaction.amount
+                : existingTransaction.amount;
+            db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?')
+                .run(oldReversal, existingTransaction.account_id);
+        }
+
+        // Apply new balance effect on new account
+        if (newAccountId) {
+            const newEffect = newType === 'income' ? newAmount : -newAmount;
+            db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?')
+                .run(newEffect, newAccountId);
+        }
+
+        // Update the transaction
+        db.prepare(`
+            UPDATE transactions
+            SET amount = ?, transaction_date = ?, transaction_type = ?,
+                account_id = ?, description = ?, category = ?
+            WHERE id = ? AND user_id = ?
+        `).run(newAmount, newDate, newType, newAccountId, newDescription, newCategory, transactionId, userId);
+
+        // Get and return the updated transaction
+        const updatedTransaction = db.prepare('SELECT * FROM transactions WHERE id = ?')
+            .get(transactionId);
+
+        res.json({ transaction: updatedTransaction });
+    } catch (error) {
+        console.error('Update transaction error:', error);
+        res.status(500).json({ error: 'Server error updating transaction' });
+    }
+});
+
 // ============================================
 // TRANSFER ENDPOINTS
 // ============================================

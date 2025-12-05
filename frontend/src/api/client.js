@@ -195,6 +195,10 @@ export const transactionAPI = {
 
   async delete(id) {
     return apiClient.delete(`/transactions/${id}`)
+  },
+
+  async update(id, updates) {
+    return apiClient.put(`/transactions/${id}`, updates)
   }
 }
 
