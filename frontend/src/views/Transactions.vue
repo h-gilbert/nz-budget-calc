@@ -129,7 +129,7 @@
               </span>
             </span>
             <span class="col-amount">
-              <span class="amount-value">${{ formatCurrency(payment.amountPaid) }}</span>
+              <span class="amount-value" :class="{ 'went-negative': payment.wentNegative }">${{ formatCurrency(payment.amountPaid) }}</span>
               <span class="amount-expected" v-if="payment.amountPaid !== payment.amountDue">
                 (expected: ${{ formatCurrency(payment.amountDue) }})
               </span>
@@ -409,6 +409,10 @@ onMounted(async () => {
 
 .amount-value {
   font-weight: 600;
+  color: var(--text-primary);
+}
+
+.amount-value.went-negative {
   color: #ef4444;
 }
 
