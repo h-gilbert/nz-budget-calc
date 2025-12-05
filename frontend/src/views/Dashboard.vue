@@ -33,14 +33,8 @@
         <CashFlowCard />
       </div>
 
-      <!-- Automation Dashboard -->
-      <AutomationDashboard />
-
-      <!-- Goal Timeline Planner Card -->
-      <GoalTimelineCard />
-
-      <!-- Transfer Planning Card -->
-      <TransferPlanningCard />
+      <!-- Quick Actions Card -->
+      <QuickActionsCard />
     </div>
   </div>
 </template>
@@ -55,9 +49,7 @@ import { budgetAPI } from '@/api/client'
 import IncomeCard from '@/components/dashboard/IncomeCard.vue'
 import ExpensesCard from '@/components/dashboard/ExpensesCard.vue'
 import CashFlowCard from '@/components/dashboard/CashFlowCard.vue'
-import GoalTimelineCard from '@/components/dashboard/GoalTimelineCard.vue'
-import TransferPlanningCard from '@/components/dashboard/TransferPlanningCard.vue'
-import AutomationDashboard from '@/components/dashboard/AutomationDashboard.vue'
+import QuickActionsCard from '@/components/dashboard/QuickActionsCard.vue'
 
 const router = useRouter()
 const budgetStore = useBudgetStore()

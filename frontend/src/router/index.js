@@ -4,6 +4,9 @@ import Calculator from '@/views/Calculator.vue'
 import Dashboard from '@/views/Dashboard.vue'
 import Accounts from '@/views/Accounts.vue'
 import Transactions from '@/views/Transactions.vue'
+import Planning from '@/views/Planning.vue'
+import Automation from '@/views/Automation.vue'
+import Goals from '@/views/Goals.vue'
 
 const routes = [
   {
@@ -30,6 +33,21 @@ const routes = [
     path: '/transactions',
     name: 'Transactions',
     component: Transactions
+  },
+  {
+    path: '/planning',
+    name: 'Planning',
+    component: Planning
+  },
+  {
+    path: '/automation',
+    name: 'Automation',
+    component: Automation
+  },
+  {
+    path: '/goals',
+    name: 'Goals',
+    component: Goals
   }
 ]
 
