@@ -2699,6 +2699,121 @@ app.get('/api/payments/history', authenticateToken, (req, res) => {
     }
 });
 
+// Update a payment
+app.put('/api/payments/:id', authenticateToken, (req, res) => {
+    try {
+        const userId = req.user.userId;
+        const paymentId = req.params.id;
+        const { amount_paid, payment_date, notes } = req.body;
+
+        // Get existing payment
+        const existingPayment = db.prepare('SELECT * FROM payment_history WHERE id = ? AND user_id = ?')
+            .get(paymentId, userId);
+
+        if (!existingPayment) {
+            return res.status(404).json({ error: 'Payment not found' });
+        }
+
+        // Calculate balance adjustment if amount changed
+        const amountDiff = (amount_paid !== undefined ? amount_paid : existingPayment.amount_paid) - existingPayment.amount_paid;
+
+        // Update the payment
+        const newAmountPaid = amount_paid !== undefined ? amount_paid : existingPayment.amount_paid;
+        const newPaymentDate = payment_date || existingPayment.payment_date;
+        const newNotes = notes !== undefined ? notes : existingPayment.notes;
+        const newBalanceAfter = existingPayment.balance_after - amountDiff;
+
+        db.prepare(`
+            UPDATE payment_history
+            SET amount_paid = ?, payment_date = ?, notes = ?, balance_after = ?
+            WHERE id = ? AND user_id = ?
+        `).run(newAmountPaid, newPaymentDate, newNotes, newBalanceAfter, paymentId, userId);
+
+        // If amount changed, update the expense sub-account balance
+        if (amountDiff !== 0) {
+            // Find the expense and update its sub-account balance
+            const budget = db.prepare(`
+                SELECT * FROM budget_data
+                WHERE user_id = ? AND is_default = 1
+            `).get(userId);
+
+            if (budget && budget.expenses) {
+                const expenses = JSON.parse(budget.expenses);
+                const expense = expenses.find(e => e.id === existingPayment.expense_id);
+                if (expense && expense.sub_account) {
+                    expense.sub_account.balance = (expense.sub_account.balance || 0) - amountDiff;
+                    db.prepare('UPDATE budget_data SET expenses = ? WHERE id = ?')
+                        .run(JSON.stringify(expenses), budget.id);
+                }
+            }
+        }
+
+        // Get updated payment
+        const updatedPayment = db.prepare('SELECT * FROM payment_history WHERE id = ?').get(paymentId);
+
+        res.json({
+            payment: {
+                id: updatedPayment.id,
+                expenseId: updatedPayment.expense_id,
+                expenseName: updatedPayment.expense_name,
+                amountDue: updatedPayment.amount_due,
+                amountPaid: updatedPayment.amount_paid,
+                paymentDate: updatedPayment.payment_date,
+                dueDate: updatedPayment.due_date,
+                paymentType: updatedPayment.payment_type,
+                balanceBefore: updatedPayment.balance_before,
+                balanceAfter: updatedPayment.balance_after,
+                wentNegative: updatedPayment.went_negative === 1,
+                notes: updatedPayment.notes,
+                createdAt: updatedPayment.created_at
+            }
+        });
+    } catch (error) {
+        console.error('Update payment error:', error);
+        res.status(500).json({ error: 'Server error updating payment' });
+    }
+});
+
+// Delete a payment
+app.delete('/api/payments/:id', authenticateToken, (req, res) => {
+    try {
+        const userId = req.user.userId;
+        const paymentId = req.params.id;
+
+        // Get existing payment
+        const payment = db.prepare('SELECT * FROM payment_history WHERE id = ? AND user_id = ?')
+            .get(paymentId, userId);
+
+        if (!payment) {
+            return res.status(404).json({ error: 'Payment not found' });
+        }
+
+        // Restore the expense sub-account balance
+        const budget = db.prepare(`
+            SELECT * FROM budget_data
+            WHERE user_id = ? AND is_default = 1
+        `).get(userId);
+
+        if (budget && budget.expenses) {
+            const expenses = JSON.parse(budget.expenses);
+            const expense = expenses.find(e => e.id === payment.expense_id);
+            if (expense && expense.sub_account) {
+                expense.sub_account.balance = (expense.sub_account.balance || 0) + payment.amount_paid;
+                db.prepare('UPDATE budget_data SET expenses = ? WHERE id = ?')
+                    .run(JSON.stringify(expenses), budget.id);
+            }
+        }
+
+        // Delete the payment
+        db.prepare('DELETE FROM payment_history WHERE id = ? AND user_id = ?').run(paymentId, userId);
+
+        res.json({ message: 'Payment deleted successfully' });
+    } catch (error) {
+        console.error('Delete payment error:', error);
+        res.status(500).json({ error: 'Server error deleting payment' });
+    }
+});
+
 // Record a payment (manual or automatic)
 app.post('/api/expenses/:expenseId/pay', authenticateToken, (req, res) => {
     try {

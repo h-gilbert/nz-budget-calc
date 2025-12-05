@@ -291,6 +291,14 @@ export const paymentAPI = {
 
   async skipPayment(expenseId, skipData) {
     return apiClient.post(`/expenses/${expenseId}/skip`, skipData)
+  },
+
+  async update(id, updates) {
+    return apiClient.put(`/payments/${id}`, updates)
+  },
+
+  async delete(id) {
+    return apiClient.delete(`/payments/${id}`)
   }
 }
 

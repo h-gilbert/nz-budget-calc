@@ -1,12 +1,11 @@
 <template>
   <div class="transactions-page">
     <!-- Edit Modal -->
-    <TransactionEditModal
+    <PaymentEditModal
       :isOpen="showEditModal"
-      :transaction="selectedTransaction"
-      :accounts="accounts"
+      :payment="selectedPayment"
       @close="showEditModal = false"
-      @saved="handleTransactionSaved"
+      @saved="handlePaymentSaved"
     />
 
     <!-- Delete Confirmation Modal -->
@@ -14,38 +13,36 @@
       <Transition name="modal">
         <div v-if="showDeleteModal" class="modal-overlay" @click.self="showDeleteModal = false">
           <div class="modal-content delete-modal">
-            <h2>Delete Transaction</h2>
+            <h2>Delete Payment</h2>
             <p class="delete-warning">
-              Are you sure you want to delete this transaction?
+              Are you sure you want to delete this payment?
             </p>
-            <div v-if="transactionToDelete" class="delete-details">
+            <div v-if="paymentToDelete" class="delete-details">
               <div class="detail-row">
-                <span class="label">Description:</span>
-                <span class="value">{{ transactionToDelete.description || 'No description' }}</span>
+                <span class="label">Expense:</span>
+                <span class="value">{{ paymentToDelete.expenseName }}</span>
               </div>
               <div class="detail-row">
-                <span class="label">Amount:</span>
-                <span class="value" :class="transactionToDelete.transaction_type">
-                  {{ transactionToDelete.transaction_type === 'income' ? '+' : '-' }}${{ formatCurrency(transactionToDelete.amount) }}
-                </span>
+                <span class="label">Amount Paid:</span>
+                <span class="value expense">${{ formatCurrency(paymentToDelete.amountPaid) }}</span>
               </div>
               <div class="detail-row">
                 <span class="label">Date:</span>
-                <span class="value">{{ formatDate(transactionToDelete.transaction_date) }}</span>
+                <span class="value">{{ formatDate(paymentToDelete.paymentDate) }}</span>
               </div>
             </div>
-            <div class="balance-warning" v-if="transactionToDelete?.account_id">
+            <div class="balance-warning">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <circle cx="12" cy="12" r="10"></circle>
                 <line x1="12" y1="8" x2="12" y2="12"></line>
                 <line x1="12" y1="16" x2="12.01" y2="16"></line>
               </svg>
-              <span>This will {{ transactionToDelete.transaction_type === 'income' ? 'decrease' : 'increase' }} account balance by ${{ formatCurrency(transactionToDelete.amount) }}</span>
+              <span>This will restore ${{ formatCurrency(paymentToDelete?.amountPaid || 0) }} to the expense's sub-account balance</span>
             </div>
             <div class="modal-actions">
               <button class="btn btn-secondary" @click="showDeleteModal = false">Cancel</button>
               <button class="btn btn-danger" @click="handleDeleteConfirmed" :disabled="deleting">
-                {{ deleting ? 'Deleting...' : 'Delete Transaction' }}
+                {{ deleting ? 'Deleting...' : 'Delete Payment' }}
               </button>
             </div>
           </div>
@@ -75,105 +72,76 @@
       <header class="page-header">
         <div class="header-title">
           <h1>Transactions</h1>
-          <p class="header-subtitle">View and manage all your transactions</p>
+          <p class="header-subtitle">View and manage all your payment history</p>
         </div>
       </header>
 
-      <!-- Filters Section -->
-      <div class="filters-section">
-        <div class="filter-group">
-          <label>Account</label>
-          <select v-model="filters.account_id" class="filter-select">
-            <option :value="null">All Accounts</option>
-            <option v-for="account in accounts" :key="account.id" :value="account.id">
-              {{ account.name }}
-            </option>
-          </select>
-        </div>
-
-        <div class="filter-group">
-          <label>Type</label>
-          <select v-model="filters.transaction_type" class="filter-select">
-            <option :value="null">All Types</option>
-            <option value="income">Income</option>
-            <option value="expense">Expense</option>
-            <option value="transfer">Transfer</option>
-          </select>
-        </div>
-
-        <button class="btn-clear-filters" @click="clearFilters" v-if="filters.account_id || filters.transaction_type">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <line x1="18" y1="6" x2="6" y2="18"></line>
-            <line x1="6" y1="6" x2="18" y2="18"></line>
-          </svg>
-          Clear Filters
-        </button>
-      </div>
-
       <!-- Summary Stats -->
-      <div class="stats-bar" v-if="transactions.length > 0">
+      <div class="stats-bar" v-if="payments.length > 0">
         <div class="stat-card">
-          <div class="stat-label">Total Transactions</div>
-          <div class="stat-value">{{ transactions.length }}</div>
-        </div>
-        <div class="stat-card income">
-          <div class="stat-label">Total Income</div>
-          <div class="stat-value">+${{ formatCurrency(totalIncome) }}</div>
+          <div class="stat-label">Total Payments</div>
+          <div class="stat-value">{{ payments.length }}</div>
         </div>
         <div class="stat-card expense">
-          <div class="stat-label">Total Expenses</div>
-          <div class="stat-value">-${{ formatCurrency(totalExpenses) }}</div>
+          <div class="stat-label">Total Paid</div>
+          <div class="stat-value">${{ formatCurrency(totalPaid) }}</div>
         </div>
-        <div class="stat-card" :class="netAmount >= 0 ? 'income' : 'expense'">
-          <div class="stat-label">Net</div>
-          <div class="stat-value">{{ netAmount >= 0 ? '+' : '' }}${{ formatCurrency(netAmount) }}</div>
+        <div class="stat-card">
+          <div class="stat-label">Automatic</div>
+          <div class="stat-value">{{ automaticCount }}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Manual</div>
+          <div class="stat-value">{{ manualCount }}</div>
         </div>
       </div>
 
-      <!-- Transactions List -->
+      <!-- Payments List -->
       <div class="transactions-list">
-        <div v-if="transactions.length === 0" class="empty-state">
+        <div v-if="payments.length === 0" class="empty-state">
           <div class="empty-icon">📋</div>
           <p>No transactions found</p>
-          <p class="empty-subtitle">Transactions will appear here when you record income, expenses, or transfers</p>
+          <p class="empty-subtitle">Transactions will appear here when you record expense payments</p>
         </div>
 
         <div v-else class="transactions-table">
           <div class="table-header">
             <span class="col-date">Date</span>
-            <span class="col-description">Description</span>
-            <span class="col-category">Category</span>
-            <span class="col-account">Account</span>
+            <span class="col-expense">Expense</span>
+            <span class="col-due">Due Date</span>
             <span class="col-type">Type</span>
-            <span class="col-amount">Amount</span>
+            <span class="col-amount">Amount Paid</span>
             <span class="col-actions">Actions</span>
           </div>
 
           <div
-            v-for="transaction in transactions"
-            :key="transaction.id"
+            v-for="payment in payments"
+            :key="payment.id"
             class="transaction-row"
+            :class="{ 'went-negative': payment.wentNegative }"
           >
-            <span class="col-date">{{ formatDate(transaction.transaction_date) }}</span>
-            <span class="col-description">{{ transaction.description || '-' }}</span>
-            <span class="col-category">{{ transaction.category || '-' }}</span>
-            <span class="col-account">{{ getAccountName(transaction.account_id) }}</span>
+            <span class="col-date">{{ formatDate(payment.paymentDate) }}</span>
+            <span class="col-expense">{{ payment.expenseName }}</span>
+            <span class="col-due">{{ formatDate(payment.dueDate) }}</span>
             <span class="col-type">
-              <span class="type-badge" :class="transaction.transaction_type">
-                {{ transaction.transaction_type }}
+              <span class="type-badge" :class="payment.paymentType">
+                {{ payment.paymentType }}
               </span>
             </span>
-            <span class="col-amount" :class="transaction.transaction_type">
-              {{ transaction.transaction_type === 'income' ? '+' : '-' }}${{ formatCurrency(transaction.amount) }}
+            <span class="col-amount">
+              <span class="amount-value">${{ formatCurrency(payment.amountPaid) }}</span>
+              <span class="amount-expected" v-if="payment.amountPaid !== payment.amountDue">
+                (expected: ${{ formatCurrency(payment.amountDue) }})
+              </span>
             </span>
             <div class="col-actions">
-              <button class="btn-icon" @click="openEditModal(transaction)" title="Edit">
+              <button class="btn-icon" @click="openEditModal(payment)" title="Edit">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
                   <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
                 </svg>
               </button>
-              <button class="btn-icon btn-danger" @click="confirmDelete(transaction)" title="Delete">
+              <button class="btn-icon btn-danger" @click="confirmDelete(payment)" title="Delete">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <polyline points="3 6 5 6 21 6"></polyline>
                   <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
@@ -192,8 +160,8 @@
 <script setup>
 import { ref, computed, watch, onMounted } from 'vue'
 import { useUserStore } from '@/stores/user'
-import { transactionAPI, accountAPI } from '@/api/client'
-import TransactionEditModal from '@/components/ui/TransactionEditModal.vue'
+import { paymentAPI } from '@/api/client'
+import PaymentEditModal from '@/components/ui/PaymentEditModal.vue'
 
 const userStore = useUserStore()
 
@@ -202,37 +170,26 @@ const isLoading = ref(false)
 const loadError = ref(null)
 
 // Data
-const transactions = ref([])
-const accounts = ref([])
-
-// Filters
-const filters = ref({
-  account_id: null,
-  transaction_type: null
-})
+const payments = ref([])
 
 // Modal state
 const showEditModal = ref(false)
-const selectedTransaction = ref(null)
+const selectedPayment = ref(null)
 const showDeleteModal = ref(false)
-const transactionToDelete = ref(null)
+const paymentToDelete = ref(null)
 const deleting = ref(false)
 
 // Computed stats
-const totalIncome = computed(() => {
-  return transactions.value
-    .filter(t => t.transaction_type === 'income')
-    .reduce((sum, t) => sum + t.amount, 0)
+const totalPaid = computed(() => {
+  return payments.value.reduce((sum, p) => sum + p.amountPaid, 0)
 })
 
-const totalExpenses = computed(() => {
-  return transactions.value
-    .filter(t => t.transaction_type === 'expense')
-    .reduce((sum, t) => sum + t.amount, 0)
+const automaticCount = computed(() => {
+  return payments.value.filter(p => p.paymentType === 'automatic').length
 })
 
-const netAmount = computed(() => {
-  return totalIncome.value - totalExpenses.value
+const manualCount = computed(() => {
+  return payments.value.filter(p => p.paymentType === 'manual').length
 })
 
 // Methods
@@ -250,44 +207,29 @@ function formatDate(dateStr) {
   })
 }
 
-function getAccountName(accountId) {
-  if (!accountId) return '-'
-  const account = accounts.value.find(a => a.id === accountId)
-  return account ? account.name : '-'
-}
-
-function clearFilters() {
-  filters.value = {
-    account_id: null,
-    transaction_type: null
-  }
-}
-
-function openEditModal(transaction) {
-  selectedTransaction.value = { ...transaction }
+function openEditModal(payment) {
+  selectedPayment.value = { ...payment }
   showEditModal.value = true
 }
 
-function confirmDelete(transaction) {
-  transactionToDelete.value = transaction
+function confirmDelete(payment) {
+  paymentToDelete.value = payment
   showDeleteModal.value = true
 }
 
-async function handleTransactionSaved() {
-  await loadTransactions()
-  await loadAccounts()
+async function handlePaymentSaved() {
+  await loadPayments()
 }
 
 async function handleDeleteConfirmed() {
-  if (!transactionToDelete.value || deleting.value) return
+  if (!paymentToDelete.value || deleting.value) return
 
   deleting.value = true
   try {
-    await transactionAPI.delete(transactionToDelete.value.id)
-    await loadTransactions()
-    await loadAccounts()
+    await paymentAPI.delete(paymentToDelete.value.id)
+    await loadPayments()
     showDeleteModal.value = false
-    transactionToDelete.value = null
+    paymentToDelete.value = null
   } catch (error) {
     console.error('Delete failed:', error)
   } finally {
@@ -295,26 +237,13 @@ async function handleDeleteConfirmed() {
   }
 }
 
-async function loadTransactions() {
+async function loadPayments() {
   try {
-    const params = {}
-    if (filters.value.account_id) params.account_id = filters.value.account_id
-    if (filters.value.transaction_type) params.transaction_type = filters.value.transaction_type
-
-    const response = await transactionAPI.getAll(params)
-    transactions.value = response.transactions || []
+    const response = await paymentAPI.getHistory({ limit: 100 })
+    payments.value = response.payments || []
   } catch (error) {
-    console.error('Failed to load transactions:', error)
-    loadError.value = error.message || 'Failed to load transactions'
-  }
-}
-
-async function loadAccounts() {
-  try {
-    const response = await accountAPI.getAll()
-    accounts.value = response.accounts || response || []
-  } catch (error) {
-    console.error('Failed to load accounts:', error)
+    console.error('Failed to load payments:', error)
+    loadError.value = error.message || 'Failed to load payments'
   }
 }
 
@@ -325,7 +254,7 @@ async function loadData() {
   loadError.value = null
 
   try {
-    await Promise.all([loadTransactions(), loadAccounts()])
+    await loadPayments()
   } catch (error) {
     console.error('Failed to load data:', error)
     loadError.value = error.message || 'Failed to load data'
@@ -333,11 +262,6 @@ async function loadData() {
     isLoading.value = false
   }
 }
-
-// Watch filters and reload
-watch(filters, () => {
-  loadTransactions()
-}, { deep: true })
 
 // Watch auth state
 watch(() => userStore.isAuthenticated, (isAuth) => {
@@ -385,57 +309,6 @@ onMounted(async () => {
   margin: 0;
 }
 
-/* Filters */
-.filters-section {
-  display: flex;
-  gap: 1rem;
-  margin-bottom: 1.5rem;
-  flex-wrap: wrap;
-  align-items: flex-end;
-}
-
-.filter-group {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.filter-group label {
-  font-size: 0.875rem;
-  font-weight: 500;
-  color: var(--text-secondary);
-}
-
-.filter-select {
-  padding: 0.5rem 1rem;
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  background: var(--bg-card);
-  color: var(--text-primary);
-  font-size: 0.875rem;
-  min-width: 150px;
-  cursor: pointer;
-}
-
-.btn-clear-filters {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.5rem 1rem;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  color: var(--text-secondary);
-  font-size: 0.875rem;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.btn-clear-filters:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-
 /* Stats Bar */
 .stats-bar {
   display: grid;
@@ -449,10 +322,6 @@ onMounted(async () => {
   border-radius: 12px;
   padding: 1rem 1.5rem;
   border: 1px solid var(--border-light);
-}
-
-.stat-card.income .stat-value {
-  color: #22c55e;
 }
 
 .stat-card.expense .stat-value {
@@ -487,7 +356,7 @@ onMounted(async () => {
 
 .table-header {
   display: grid;
-  grid-template-columns: 100px 1fr 120px 120px 90px 100px 80px;
+  grid-template-columns: 100px 1fr 100px 100px 150px 80px;
   gap: 1rem;
   padding: 1rem 1.5rem;
   background: var(--bg-secondary);
@@ -501,7 +370,7 @@ onMounted(async () => {
 
 .transaction-row {
   display: grid;
-  grid-template-columns: 100px 1fr 120px 120px 90px 100px 80px;
+  grid-template-columns: 100px 1fr 100px 100px 150px 80px;
   gap: 1rem;
   padding: 1rem 1.5rem;
   border-bottom: 1px solid var(--border-light);
@@ -517,33 +386,35 @@ onMounted(async () => {
   background: var(--bg-hover);
 }
 
-.col-description {
+.transaction-row.went-negative {
+  background: rgba(239, 68, 68, 0.05);
+}
+
+.col-expense {
   font-weight: 500;
   color: var(--text-primary);
 }
 
-.col-category,
-.col-account,
-.col-date {
+.col-date,
+.col-due {
   color: var(--text-secondary);
   font-size: 0.875rem;
 }
 
 .col-amount {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.amount-value {
   font-weight: 600;
-  text-align: right;
-}
-
-.col-amount.income {
-  color: #22c55e;
-}
-
-.col-amount.expense {
   color: #ef4444;
 }
 
-.col-amount.transfer {
-  color: var(--primary-teal);
+.amount-expected {
+  font-size: 0.75rem;
+  color: var(--text-muted);
 }
 
 .type-badge {
@@ -555,19 +426,14 @@ onMounted(async () => {
   text-transform: capitalize;
 }
 
-.type-badge.income {
-  background: rgba(34, 197, 94, 0.1);
-  color: #22c55e;
-}
-
-.type-badge.expense {
-  background: rgba(239, 68, 68, 0.1);
-  color: #ef4444;
-}
-
-.type-badge.transfer {
+.type-badge.automatic {
   background: rgba(20, 184, 166, 0.1);
   color: var(--primary-teal);
+}
+
+.type-badge.manual {
+  background: rgba(59, 130, 246, 0.1);
+  color: #3b82f6;
 }
 
 .col-actions {
@@ -707,10 +573,6 @@ onMounted(async () => {
   color: var(--text-primary);
 }
 
-.detail-row .value.income {
-  color: #22c55e;
-}
-
 .detail-row .value.expense {
   color: #ef4444;
 }
@@ -720,11 +582,11 @@ onMounted(async () => {
   align-items: center;
   gap: 0.75rem;
   padding: 0.75rem;
-  background: rgba(234, 179, 8, 0.1);
-  border: 1px solid rgba(234, 179, 8, 0.3);
+  background: rgba(34, 197, 94, 0.1);
+  border: 1px solid rgba(34, 197, 94, 0.3);
   border-radius: 8px;
   margin-bottom: 1.5rem;
-  color: #ca8a04;
+  color: #22c55e;
   font-size: 0.875rem;
 }
 
@@ -803,11 +665,7 @@ onMounted(async () => {
     padding: 1rem;
   }
 
-  .transaction-row::before {
-    content: attr(data-date);
-  }
-
-  .col-description {
+  .col-expense {
     font-size: 1rem;
   }
 
@@ -823,18 +681,6 @@ onMounted(async () => {
 @media (max-width: 600px) {
   .page-content {
     padding: 1rem;
-  }
-
-  .filters-section {
-    flex-direction: column;
-  }
-
-  .filter-group {
-    width: 100%;
-  }
-
-  .filter-select {
-    width: 100%;
   }
 
   .stats-bar {
