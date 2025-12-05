@@ -6,8 +6,27 @@
     </div>
 
     <div class="actions-grid">
+      <!-- Accounts Column -->
+      <router-link :to="{ path: '/money', query: { tab: 'accounts' } }" class="action-column">
+        <div class="column-icon">💰</div>
+        <h4>Accounts</h4>
+        <div class="metrics">
+          <div class="metric">
+            <span class="metric-label">Expense groups:</span>
+            <span class="metric-value">{{ budgetStore.groupedExpenses.length }}</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Total allocated:</span>
+            <span class="metric-value">${{ formatCurrency(totalAllocated) }}</span>
+          </div>
+        </div>
+        <div class="action-link">
+          View Details →
+        </div>
+      </router-link>
+
       <!-- Automation Column -->
-      <router-link to="/automation" class="action-column">
+      <router-link :to="{ path: '/money', query: { tab: 'automation' } }" class="action-column">
         <div class="column-icon">🔄</div>
         <h4>Automation</h4>
         <div class="status-indicator" :class="automationStatusClass">
@@ -28,7 +47,7 @@
       </router-link>
 
       <!-- Planning Column -->
-      <router-link to="/planning" class="action-column">
+      <router-link :to="{ path: '/money', query: { tab: 'planning' } }" class="action-column">
         <div class="column-icon">📅</div>
         <h4>Planning</h4>
         <div v-if="loading" class="status-indicator">Loading...</div>
@@ -51,7 +70,7 @@
       </router-link>
 
       <!-- Goals Column -->
-      <router-link to="/goals" class="action-column">
+      <router-link :to="{ path: '/money', query: { tab: 'goals' } }" class="action-column">
         <div class="column-icon">🎯</div>
         <h4>Goals</h4>
         <div class="metrics">
@@ -106,6 +125,13 @@ const automationStatusClass = computed(() => {
     return 'status-warning'
   }
   return 'status-success'
+})
+
+// Accounts info
+const totalAllocated = computed(() => {
+  return budgetStore.expenses.reduce((total, expense) => {
+    return total + (parseFloat(expense.sub_account?.balance) || 0)
+  }, 0)
 })
 
 // Goals info

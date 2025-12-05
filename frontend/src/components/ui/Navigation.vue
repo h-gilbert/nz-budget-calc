@@ -6,14 +6,10 @@
       </router-link>
 
       <div class="nav-links">
-        <router-link to="/" class="nav-link">Home</router-link>
         <router-link to="/calculator" class="nav-link">Budget Setup</router-link>
-        <router-link to="/accounts" class="nav-link">Accounts</router-link>
-        <router-link to="/transactions" class="nav-link">Transactions</router-link>
         <router-link to="/dashboard" class="nav-link">Dashboard</router-link>
-        <router-link to="/planning" class="nav-link">Planning</router-link>
-        <router-link to="/automation" class="nav-link">Automation</router-link>
-        <router-link to="/goals" class="nav-link">Goals</router-link>
+        <router-link to="/money" class="nav-link">Money</router-link>
+        <router-link to="/transactions" class="nav-link">Transactions</router-link>
 
         <div v-if="userStore.isAuthenticated" class="user-menu" v-click-outside="() => userDropdownOpen = false">
           <button class="user-menu-trigger" @click="userDropdownOpen = !userDropdownOpen">
@@ -64,14 +60,10 @@
     <!-- Mobile menu -->
     <Transition name="mobile-menu">
       <div v-if="mobileMenuOpen" class="mobile-menu">
-        <router-link to="/" class="mobile-link" @click="mobileMenuOpen = false">Home</router-link>
         <router-link to="/calculator" class="mobile-link" @click="mobileMenuOpen = false">Budget Setup</router-link>
-        <router-link to="/accounts" class="mobile-link" @click="mobileMenuOpen = false">Accounts</router-link>
-        <router-link to="/transactions" class="mobile-link" @click="mobileMenuOpen = false">Transactions</router-link>
         <router-link to="/dashboard" class="mobile-link" @click="mobileMenuOpen = false">Dashboard</router-link>
-        <router-link to="/planning" class="mobile-link" @click="mobileMenuOpen = false">Planning</router-link>
-        <router-link to="/automation" class="mobile-link" @click="mobileMenuOpen = false">Automation</router-link>
-        <router-link to="/goals" class="mobile-link" @click="mobileMenuOpen = false">Goals</router-link>
+        <router-link to="/money" class="mobile-link" @click="mobileMenuOpen = false">Money</router-link>
+        <router-link to="/transactions" class="mobile-link" @click="mobileMenuOpen = false">Transactions</router-link>
 
         <div v-if="userStore.isAuthenticated" class="mobile-user-section">
           <span class="mobile-user-info">{{ userStore.username }}</span>
