@@ -1265,16 +1265,24 @@ app.get('/api/transactions/budget-summary', authenticateToken, (req, res) => {
             weeks = 4
         } = req.query;
 
-        // Default date range: last N weeks
+        // Default date range: last N weeks (or all time if weeks=0)
         let startDate, endDate;
+        const weeksNum = parseInt(weeks);
+        const isAllTime = weeksNum === 0;
+
         if (from_date && to_date) {
             startDate = from_date;
             endDate = to_date;
         } else {
             endDate = formatDateLocal(new Date());
-            const start = new Date();
-            start.setDate(start.getDate() - (parseInt(weeks) * 7));
-            startDate = formatDateLocal(start);
+            if (isAllTime) {
+                // For "all time", we'll determine start date per expense from first transaction
+                startDate = null;
+            } else {
+                const start = new Date();
+                start.setDate(start.getDate() - (weeksNum * 7));
+                startDate = formatDateLocal(start);
+            }
         }
 
         // Get only budget envelopes for budget vs actual tracking
@@ -1305,21 +1313,42 @@ app.get('/api/transactions/budget-summary', authenticateToken, (req, res) => {
             const weeklyBudget = expense.amount * (frequencyMultipliers[expense.frequency] || 1);
 
             // Get actual transactions for this expense
-            const transactions = db.prepare(`
-                SELECT
-                    SUM(amount) as total_actual,
-                    COUNT(*) as transaction_count,
-                    MIN(transaction_date) as first_date,
-                    MAX(transaction_date) as last_date
-                FROM transactions
-                WHERE user_id = ?
-                    AND recurring_expense_id = ?
-                    AND transaction_date >= ?
-                    AND transaction_date <= ?
-            `).get(userId, expense.id, startDate, endDate);
+            let transactions;
+            let effectiveStartDate = startDate;
+
+            if (isAllTime) {
+                // For "all time", get all transactions and use first date as start
+                transactions = db.prepare(`
+                    SELECT
+                        SUM(amount) as total_actual,
+                        COUNT(*) as transaction_count,
+                        MIN(transaction_date) as first_date,
+                        MAX(transaction_date) as last_date
+                    FROM transactions
+                    WHERE user_id = ?
+                        AND recurring_expense_id = ?
+                        AND transaction_date <= ?
+                `).get(userId, expense.id, endDate);
+
+                // Use first transaction date as start, or today if no transactions
+                effectiveStartDate = transactions.first_date || endDate;
+            } else {
+                transactions = db.prepare(`
+                    SELECT
+                        SUM(amount) as total_actual,
+                        COUNT(*) as transaction_count,
+                        MIN(transaction_date) as first_date,
+                        MAX(transaction_date) as last_date
+                    FROM transactions
+                    WHERE user_id = ?
+                        AND recurring_expense_id = ?
+                        AND transaction_date >= ?
+                        AND transaction_date <= ?
+                `).get(userId, expense.id, startDate, endDate);
+            }
 
             // Calculate number of weeks in range
-            const daysDiff = Math.ceil((new Date(endDate) - new Date(startDate)) / (1000 * 60 * 60 * 24));
+            const daysDiff = Math.ceil((new Date(endDate) - new Date(effectiveStartDate)) / (1000 * 60 * 60 * 24));
             const weeksInRange = Math.max(1, daysDiff / 7);
 
             const totalBudget = weeklyBudget * weeksInRange;

@@ -14,8 +14,10 @@
             </svg>
           </button>
           <div class="absolute left-0 top-full mt-2 w-64 p-3 bg-slate-800 text-white text-xs rounded-xl shadow-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-10">
-            <p class="font-medium mb-1">Rolling {{ weeks }}-week period</p>
-            <p class="text-slate-300">Compares your spending from the last {{ weeks }} weeks against your weekly budget × {{ weeks }}.</p>
+            <p class="font-medium mb-1">{{ weeks === 0 ? 'All time' : `Rolling ${weeks}-week period` }}</p>
+            <p class="text-slate-300">{{ weeks === 0
+              ? 'Compares all your spending since you started tracking against your weekly budget for that time.'
+              : `Compares your spending from the last ${weeks} weeks against your weekly budget × ${weeks}.` }}</p>
             <p class="text-slate-400 mt-2">Some weeks you'll be over, some under — it smooths out over time!</p>
             <div class="absolute -top-1.5 left-3 w-3 h-3 bg-slate-800 rotate-45"></div>
           </div>
@@ -29,6 +31,7 @@
         <option :value="4">4 weeks</option>
         <option :value="8">8 weeks</option>
         <option :value="12">12 weeks</option>
+        <option :value="0">All time</option>
       </select>
     </div>
 
