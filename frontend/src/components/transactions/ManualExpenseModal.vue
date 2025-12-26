@@ -32,23 +32,51 @@
           <!-- Form -->
           <form @submit.prevent="handleSave" class="p-6 space-y-4">
             <!-- Expense Category -->
-            <div>
-              <label class="block text-sm font-medium text-slate-700 mb-2">Category</label>
-              <select
-                v-model="form.expenseId"
-                class="w-full px-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-teal-500 focus:border-transparent"
-                required
-              >
-                <option value="">Select category...</option>
-                <option
-                  v-for="expense in manualExpenses"
-                  :key="expense.id"
-                  :value="expense.id"
-                >
-                  {{ expense.name || expense.description }} (${{ getWeeklyBudget(expense) }}/week)
-                </option>
-              </select>
-            </div>
+            <CustomDropdown
+              v-model="form.expenseId"
+              :options="expenseOptions"
+              label="Category"
+              placeholder="Select category..."
+              required
+            >
+              <template #selected="{ option }">
+                <div class="flex items-center justify-between w-full min-w-0 pr-2">
+                  <span class="font-medium text-slate-800 truncate">{{ option.name }}</span>
+                  <span class="text-sm text-slate-500 flex-shrink-0 ml-2">
+                    ${{ formatAmount(option.amount) }}<span class="text-slate-400">/{{ formatFrequency(option.frequency) }}</span>
+                  </span>
+                </div>
+              </template>
+              <template #option="{ option, selected }">
+                <div class="flex items-center justify-between">
+                  <div class="flex flex-col min-w-0">
+                    <span class="font-medium truncate" :class="selected ? 'text-teal-800' : 'text-slate-800'">
+                      {{ option.name }}
+                    </span>
+                    <span class="text-xs" :class="selected ? 'text-teal-600' : 'text-slate-400'">
+                      {{ option.expenseType === 'budget' ? 'Budget envelope' : 'Bill' }}
+                    </span>
+                  </div>
+                  <div class="flex items-center gap-2 flex-shrink-0 ml-3">
+                    <span class="text-sm font-semibold" :class="selected ? 'text-teal-700' : 'text-slate-700'">
+                      ${{ formatAmount(option.amount) }}
+                    </span>
+                    <span class="text-xs px-2 py-0.5 rounded-full" :class="selected ? 'bg-teal-200 text-teal-700' : 'bg-slate-100 text-slate-500'">
+                      {{ formatFrequency(option.frequency) }}
+                    </span>
+                    <svg
+                      v-if="selected"
+                      class="w-5 h-5 text-teal-600"
+                      xmlns="http://www.w3.org/2000/svg"
+                      viewBox="0 0 20 20"
+                      fill="currentColor"
+                    >
+                      <path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd" />
+                    </svg>
+                  </div>
+                </div>
+              </template>
+            </CustomDropdown>
 
             <!-- Amount -->
             <div>
@@ -165,6 +193,7 @@
 <script setup>
 import { ref, computed, watch } from 'vue'
 import { useBudgetStore } from '@/stores/budget'
+import CustomDropdown from '@/components/common/CustomDropdown.vue'
 
 const props = defineProps({
   show: {
@@ -214,6 +243,38 @@ const manualExpenses = computed(() => {
     !e.paymentMode // Include legacy expenses without paymentMode
   )
 })
+
+// Transform expenses into dropdown options with actual amounts
+const expenseOptions = computed(() => {
+  return manualExpenses.value.map(expense => ({
+    value: expense.id,
+    label: expense.name || expense.description,
+    name: expense.name || expense.description,
+    amount: parseFloat(expense.amount) || 0,
+    frequency: expense.frequency || 'weekly',
+    expenseType: expense.expenseType || 'bill',
+    searchTerms: `${expense.name} ${expense.description}`
+  }))
+})
+
+// Format amount to 2 decimal places, removing trailing zeros
+function formatAmount(amount) {
+  const formatted = parseFloat(amount).toFixed(2)
+  // Remove unnecessary trailing zeros
+  return formatted.replace(/\.00$/, '').replace(/(\.\d)0$/, '$1')
+}
+
+// Format frequency for display
+function formatFrequency(frequency) {
+  const labels = {
+    'weekly': 'week',
+    'fortnightly': 'fortnight',
+    'monthly': 'month',
+    'annually': 'year',
+    'one-off': 'one-off'
+  }
+  return labels[frequency] || frequency
+}
 
 // Selected expense
 const selectedExpense = computed(() => {
