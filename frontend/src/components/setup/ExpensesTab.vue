@@ -98,7 +98,12 @@
         >
           <!-- Desktop: Grid layout -->
           <div class="hidden md:grid grid-cols-[1fr_100px_100px_110px_90px] gap-2 px-4 py-3">
-            <span class="text-slate-800 font-medium truncate">{{ expense.name || 'Unnamed expense' }}</span>
+            <span class="text-slate-800 font-medium truncate flex items-center gap-1.5">
+              {{ expense.name || 'Unnamed expense' }}
+              <span v-if="expense.expenseType === 'budget'" class="px-1.5 py-0.5 text-xs font-medium bg-purple-100 text-purple-600 rounded">
+                Budget
+              </span>
+            </span>
             <span class="text-right font-mono text-slate-600 text-sm">${{ formatMoney(expense.amount) }}</span>
             <span class="text-slate-500 text-sm capitalize">{{ expense.frequency }}</span>
             <span class="text-slate-500 text-sm truncate">{{ getAccountName(expense.accountId) }}</span>
@@ -108,7 +113,12 @@
           <!-- Mobile: Card layout -->
           <div class="md:hidden px-4 py-3 space-y-2">
             <div class="flex items-start justify-between gap-3">
-              <span class="text-slate-800 font-medium flex-1 min-w-0">{{ expense.name || 'Unnamed expense' }}</span>
+              <span class="text-slate-800 font-medium flex-1 min-w-0 flex items-center gap-1.5">
+                {{ expense.name || 'Unnamed expense' }}
+                <span v-if="expense.expenseType === 'budget'" class="px-1.5 py-0.5 text-xs font-medium bg-purple-100 text-purple-600 rounded">
+                  Budget
+                </span>
+              </span>
               <span class="font-mono text-teal-600 font-semibold text-sm whitespace-nowrap">${{ formatMoney(getWeeklyCost(expense)) }}/wk</span>
             </div>
             <div class="flex items-center gap-3 text-sm text-slate-500">

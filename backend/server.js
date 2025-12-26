@@ -568,6 +568,9 @@ function syncExpensesToTable(userId, budgetId, expensesJson, accountFrontendToDb
         // Map account frontend ID to database ID
         const dbAccountId = expense.accountId ? (accountFrontendToDbMap.get(expense.accountId) || null) : null;
 
+        // Extract expense type: 'bill' (has due dates) or 'budget' (envelope-style, no due date)
+        const expense_type = expense.expenseType || 'bill';
+
         // Normalize frequency (frontend uses 'annual', backend expects it for calculateNextDueDate)
         let frequency = expense.period || expense.frequency || 'weekly';
         if (frequency === 'annually') frequency = 'annual';
@@ -590,8 +593,13 @@ function syncExpensesToTable(userId, budgetId, expensesJson, accountFrontendToDb
             due_date = expense.date || expense.dueDate;
         }
 
-        // Calculate next due date
-        const next_due_date = calculateNextDueDate(frequency, due_day_of_week, due_day_of_month, due_date);
+        // Calculate next due date only for bill types (budget envelopes don't have due dates)
+        const next_due_date = expense_type === 'bill'
+            ? calculateNextDueDate(frequency, due_day_of_week, due_day_of_month, due_date)
+            : null;
+
+        // For budget types, force payment_mode to 'manual' (user logs actual spending)
+        const payment_mode = expense_type === 'budget' ? 'manual' : (expense.paymentMode || 'automatic');
 
         if (existingMap.has(expense.id)) {
             // Update existing expense
@@ -606,6 +614,7 @@ function syncExpensesToTable(userId, budgetId, expensesJson, accountFrontendToDb
                     next_due_date = ?,
                     account_id = ?,
                     payment_mode = ?,
+                    expense_type = ?,
                     is_active = 1,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
@@ -618,7 +627,8 @@ function syncExpensesToTable(userId, budgetId, expensesJson, accountFrontendToDb
                 due_date,
                 next_due_date,
                 dbAccountId,
-                expense.paymentMode || 'automatic',
+                payment_mode,
+                expense_type,
                 existingMap.get(expense.id)
             );
         } else {
@@ -627,8 +637,8 @@ function syncExpensesToTable(userId, budgetId, expensesJson, accountFrontendToDb
                 INSERT INTO recurring_expenses (
                     user_id, budget_id, frontend_id, description, amount, frequency,
                     due_day_of_week, due_day_of_month, due_date, next_due_date,
-                    account_id, payment_mode, is_active
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                    account_id, payment_mode, expense_type, is_active
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
             `).run(
                 userId,
                 budgetId,
@@ -641,7 +651,8 @@ function syncExpensesToTable(userId, budgetId, expensesJson, accountFrontendToDb
                 due_date,
                 next_due_date,
                 dbAccountId,
-                expense.paymentMode || 'automatic'
+                payment_mode,
+                expense_type
             );
         }
     }
@@ -666,7 +677,8 @@ app.post('/api/recurring-expenses', authenticateToken, (req, res) => {
             due_day_of_month,
             due_date,
             account_id,
-            payment_mode
+            payment_mode,
+            expense_type = 'bill'
         } = req.body;
         const userId = req.user.userId;
 
@@ -674,29 +686,36 @@ app.post('/api/recurring-expenses', authenticateToken, (req, res) => {
             return res.status(400).json({ error: 'Description, amount, and frequency are required' });
         }
 
-        // Validate frequency-specific fields
-        if (frequency === 'weekly' || frequency === 'fortnightly') {
-            if (due_day_of_week === undefined || due_day_of_week < 0 || due_day_of_week > 6) {
-                return res.status(400).json({ error: 'Valid due_day_of_week (0-6) required for weekly/fortnightly expenses' });
-            }
-        } else if (frequency === 'monthly') {
-            if (!due_day_of_month || due_day_of_month < 1 || due_day_of_month > 31) {
-                return res.status(400).json({ error: 'Valid due_day_of_month (1-31) required for monthly expenses' });
-            }
-        } else if (frequency === 'annual') {
-            if (!due_date) {
-                return res.status(400).json({ error: 'due_date required for annual expenses' });
+        // Validate frequency-specific fields only for bill types (budget envelopes don't need due dates)
+        if (expense_type === 'bill') {
+            if (frequency === 'weekly' || frequency === 'fortnightly') {
+                if (due_day_of_week === undefined || due_day_of_week < 0 || due_day_of_week > 6) {
+                    return res.status(400).json({ error: 'Valid due_day_of_week (0-6) required for weekly/fortnightly expenses' });
+                }
+            } else if (frequency === 'monthly') {
+                if (!due_day_of_month || due_day_of_month < 1 || due_day_of_month > 31) {
+                    return res.status(400).json({ error: 'Valid due_day_of_month (1-31) required for monthly expenses' });
+                }
+            } else if (frequency === 'annual') {
+                if (!due_date) {
+                    return res.status(400).json({ error: 'due_date required for annual expenses' });
+                }
             }
         }
 
-        // Calculate next due date
-        const next_due_date = calculateNextDueDate(frequency, due_day_of_week, due_day_of_month, due_date);
+        // Calculate next due date only for bill types
+        const next_due_date = expense_type === 'bill'
+            ? calculateNextDueDate(frequency, due_day_of_week, due_day_of_month, due_date)
+            : null;
+
+        // For budget types, force payment_mode to 'manual'
+        const final_payment_mode = expense_type === 'budget' ? 'manual' : (payment_mode || 'automatic');
 
         const result = db.prepare(`
             INSERT INTO recurring_expenses (
                 user_id, budget_id, description, amount, frequency,
-                due_day_of_week, due_day_of_month, due_date, next_due_date, account_id, payment_mode
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                due_day_of_week, due_day_of_month, due_date, next_due_date, account_id, payment_mode, expense_type
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
             userId,
             budget_id || null,
@@ -708,7 +727,8 @@ app.post('/api/recurring-expenses', authenticateToken, (req, res) => {
             due_date || null,
             next_due_date,
             account_id || null,
-            payment_mode || 'automatic'
+            final_payment_mode,
+            expense_type
         );
 
         const expense = db.prepare('SELECT * FROM recurring_expenses WHERE id = ?').get(result.lastInsertRowid);
@@ -808,7 +828,8 @@ app.put('/api/recurring-expenses/:id', authenticateToken, (req, res) => {
             due_date,
             account_id,
             is_active,
-            payment_mode
+            payment_mode,
+            expense_type
         } = req.body;
 
         // Verify expense belongs to user
@@ -819,22 +840,34 @@ app.put('/api/recurring-expenses/:id', authenticateToken, (req, res) => {
             return res.status(404).json({ error: 'Recurring expense not found' });
         }
 
-        // Determine if we need to recalculate next due date
-        const frequencyChanged = frequency && frequency !== expense.frequency;
-        const dateFieldChanged =
-            (due_day_of_week !== undefined && due_day_of_week !== expense.due_day_of_week) ||
-            (due_day_of_month !== undefined && due_day_of_month !== expense.due_day_of_month) ||
-            (due_date !== undefined && due_date !== expense.due_date);
+        // Determine the effective expense type
+        const effectiveExpenseType = expense_type !== undefined ? expense_type : (expense.expense_type || 'bill');
 
+        // Determine if we need to recalculate next due date (only for bill types)
         let next_due_date = expense.next_due_date;
-        if (frequencyChanged || dateFieldChanged) {
-            next_due_date = calculateNextDueDate(
-                frequency || expense.frequency,
-                due_day_of_week !== undefined ? due_day_of_week : expense.due_day_of_week,
-                due_day_of_month !== undefined ? due_day_of_month : expense.due_day_of_month,
-                due_date !== undefined ? due_date : expense.due_date
-            );
+        if (effectiveExpenseType === 'bill') {
+            const frequencyChanged = frequency && frequency !== expense.frequency;
+            const dateFieldChanged =
+                (due_day_of_week !== undefined && due_day_of_week !== expense.due_day_of_week) ||
+                (due_day_of_month !== undefined && due_day_of_month !== expense.due_day_of_month) ||
+                (due_date !== undefined && due_date !== expense.due_date);
+            const typeChangedToBill = expense_type === 'bill' && expense.expense_type === 'budget';
+
+            if (frequencyChanged || dateFieldChanged || typeChangedToBill) {
+                next_due_date = calculateNextDueDate(
+                    frequency || expense.frequency,
+                    due_day_of_week !== undefined ? due_day_of_week : expense.due_day_of_week,
+                    due_day_of_month !== undefined ? due_day_of_month : expense.due_day_of_month,
+                    due_date !== undefined ? due_date : expense.due_date
+                );
+            }
+        } else {
+            // Budget types don't have due dates
+            next_due_date = null;
         }
+
+        // For budget types, force payment_mode to 'manual'
+        const final_payment_mode = effectiveExpenseType === 'budget' ? 'manual' : (payment_mode || null);
 
         db.prepare(`
             UPDATE recurring_expenses
@@ -848,6 +881,7 @@ app.put('/api/recurring-expenses/:id', authenticateToken, (req, res) => {
                 account_id = ?,
                 is_active = COALESCE(?, is_active),
                 payment_mode = COALESCE(?, payment_mode),
+                expense_type = COALESCE(?, expense_type),
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ? AND user_id = ?
         `).run(
@@ -860,7 +894,8 @@ app.put('/api/recurring-expenses/:id', authenticateToken, (req, res) => {
             next_due_date,
             account_id !== undefined ? account_id : expense.account_id,
             is_active !== undefined ? (is_active ? 1 : 0) : null,
-            payment_mode || null,
+            final_payment_mode,
+            expense_type || null,
             expenseId,
             userId
         );
@@ -1191,6 +1226,7 @@ app.get('/api/transactions/upcoming', authenticateToken, (req, res) => {
             WHERE re.user_id = ?
                 AND re.is_active = 1
                 AND re.payment_mode = 'automatic'
+                AND (re.expense_type IS NULL OR re.expense_type = 'bill')
             ORDER BY re.next_due_date ASC
         `).all(userId);
 
@@ -1241,11 +1277,11 @@ app.get('/api/transactions/budget-summary', authenticateToken, (req, res) => {
             startDate = formatDateLocal(start);
         }
 
-        // Get manual expenses (either specific or all)
+        // Get manual expenses and budget envelopes (either specific or all)
         let expenseQuery = `
-            SELECT id, description, amount, frequency, payment_mode
+            SELECT id, description, amount, frequency, payment_mode, expense_type
             FROM recurring_expenses
-            WHERE user_id = ? AND payment_mode = 'manual' AND is_active = 1
+            WHERE user_id = ? AND (payment_mode = 'manual' OR expense_type = 'budget') AND is_active = 1
         `;
         const expenseParams = [userId];
         if (expense_id) {
@@ -1488,7 +1524,7 @@ app.delete('/api/transactions/:id', authenticateToken, (req, res) => {
 function processAutomaticExpensesForUser(userId, targetDate, exactDateOnly = false) {
     const dateCondition = exactDateOnly ? '= ?' : '<= ?';
 
-    // Get automatic expenses that are due
+    // Get automatic expenses that are due (only bill types, not budget envelopes)
     const dueExpenses = db.prepare(`
         SELECT re.*, a.current_balance as account_balance
         FROM recurring_expenses re
@@ -1496,6 +1532,7 @@ function processAutomaticExpensesForUser(userId, targetDate, exactDateOnly = fal
         WHERE re.user_id = ?
             AND re.is_active = 1
             AND re.payment_mode = 'automatic'
+            AND (re.expense_type IS NULL OR re.expense_type = 'bill')
             AND re.next_due_date ${dateCondition}
     `).all(userId, targetDate);
 
@@ -2150,10 +2187,12 @@ function checkForMissedRuns() {
             // Run in catch-up mode (process all past-due items)
             runScheduledPaymentProcessing(false);
         } else if (!lastRun) {
-            // No previous runs - check if there are any past-due items
+            // No previous runs - check if there are any past-due items (only bill types)
             const hasPastDue = db.prepare(`
                 SELECT 1 FROM recurring_expenses
-                WHERE is_active = 1 AND payment_mode = 'automatic' AND next_due_date < ?
+                WHERE is_active = 1 AND payment_mode = 'automatic'
+                    AND (expense_type IS NULL OR expense_type = 'bill')
+                    AND next_due_date < ?
                 LIMIT 1
             `).get(todayStr);
 

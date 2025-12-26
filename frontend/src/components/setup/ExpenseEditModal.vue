@@ -40,8 +40,44 @@
         <span class="font-mono font-bold text-teal-600">${{ formatWeekly }}</span>
       </div>
 
-      <!-- Payment Mode Selector -->
+      <!-- Expense Type Selector -->
       <div class="space-y-2">
+        <label class="text-sm font-semibold text-gray-700 block">Expense Type</label>
+        <div class="flex gap-2">
+          <button
+            type="button"
+            @click="localExpense.expenseType = 'bill'"
+            :class="[
+              'flex-1 px-4 py-2.5 text-sm font-medium rounded-xl transition-all',
+              (!localExpense.expenseType || localExpense.expenseType === 'bill')
+                ? 'bg-blue-500 text-white shadow-sm'
+                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+            ]"
+          >
+            Bill
+          </button>
+          <button
+            type="button"
+            @click="handleBudgetTypeSelect()"
+            :class="[
+              'flex-1 px-4 py-2.5 text-sm font-medium rounded-xl transition-all',
+              localExpense.expenseType === 'budget'
+                ? 'bg-purple-500 text-white shadow-sm'
+                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+            ]"
+          >
+            Budget Envelope
+          </button>
+        </div>
+        <p class="text-xs text-slate-500">
+          {{ localExpense.expenseType === 'budget'
+            ? 'Allocate a budget for variable spending (groceries, fuel, etc.)'
+            : 'Fixed bill with a specific due date and amount' }}
+        </p>
+      </div>
+
+      <!-- Payment Mode Selector - only for bill types -->
+      <div v-if="localExpense.expenseType !== 'budget'" class="space-y-2">
         <label class="text-sm font-semibold text-gray-700 block">Payment Mode</label>
         <div class="flex gap-2">
           <button
@@ -76,8 +112,15 @@
         </p>
       </div>
 
-      <!-- Due Date Section -->
-      <div class="space-y-3">
+      <!-- Budget envelope info -->
+      <div v-else class="p-3 bg-purple-50 rounded-xl border border-purple-100">
+        <p class="text-sm text-purple-700">
+          Budget envelopes use manual tracking - log each purchase as you spend
+        </p>
+      </div>
+
+      <!-- Due Date Section - only for bill types -->
+      <div v-if="localExpense.expenseType !== 'budget'" class="space-y-3">
         <label class="text-sm font-semibold text-gray-700 block">Due Date</label>
 
         <!-- Weekly: Day of week buttons -->
@@ -322,10 +365,16 @@ function updateAnnualDate(month, day) {
   localExpense.value.dueDate = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
 }
 
+// Handle switching to budget type - also sets payment mode to manual
+function handleBudgetTypeSelect() {
+  localExpense.value.expenseType = 'budget'
+  localExpense.value.paymentMode = 'manual'
+}
+
 function save() {
   if (props.expense) {
     // Update all fields in the store
-    const fields = ['name', 'amount', 'frequency', 'dueDay', 'dueDate', 'date', 'accountId', 'paymentMode']
+    const fields = ['name', 'amount', 'frequency', 'dueDay', 'dueDate', 'date', 'accountId', 'paymentMode', 'expenseType']
     fields.forEach((key) => {
       budgetStore.updateExpense(props.expense.id, key, localExpense.value[key])
     })

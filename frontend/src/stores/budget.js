@@ -201,9 +201,16 @@ export const useBudgetStore = defineStore('budget', () => {
       frequency: 'weekly',
       dueDay: 1, // Monday for weekly, 1st for monthly
       dueDate: null, // For annual/one-off/fortnightly reference
-      accountId: null // Link to account that pays this expense
+      accountId: null, // Link to account that pays this expense
+      paymentMode: 'automatic', // 'automatic' or 'manual'
+      expenseType: 'bill' // 'bill' (has due dates) or 'budget' (envelope-style, no due date)
     }
     expenses.value.unshift(newExpense)
+  }
+
+  // Helper to check if expense is budget envelope type
+  function isBudgetEnvelope(expense) {
+    return expense.expenseType === 'budget'
   }
 
   function removeExpense(id) {
@@ -569,7 +576,8 @@ export const useBudgetStore = defineStore('budget', () => {
           dueDay: expense.dueDay ?? expense.due_day_of_week ?? expense.due_day_of_month ?? 1,
           dueDate: expense.dueDate || expense.due_date || null,
           accountId: expense.accountId || null,
-          paymentMode: expense.paymentMode || expense.payment_mode || 'automatic'
+          paymentMode: expense.paymentMode || expense.payment_mode || 'automatic',
+          expenseType: expense.expenseType || expense.expense_type || 'bill'
         }
       })
       expenseCount.value = expenses.value.length
@@ -947,7 +955,8 @@ export const useBudgetStore = defineStore('budget', () => {
         dueDay: expense.dueDay ?? null,
         dueDate: expense.dueDate || null,
         accountId: expense.accountId || null,
-        paymentMode: expense.paymentMode || 'automatic'
+        paymentMode: expense.paymentMode || 'automatic',
+        expenseType: expense.expenseType || 'bill'
       }
     })
 
@@ -2308,6 +2317,7 @@ export const useBudgetStore = defineStore('budget', () => {
     normalizeFromWeekly,
     calculateNetFromGross,
     calculateGrossFromNet,
+    isBudgetEnvelope,
 
     // Actions
     addExpense,

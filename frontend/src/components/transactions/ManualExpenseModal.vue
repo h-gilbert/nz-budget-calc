@@ -206,10 +206,12 @@ watch(() => props.show, (isOpen) => {
   }
 })
 
-// Get manual expenses only
+// Get manual expenses and budget envelopes
 const manualExpenses = computed(() => {
   return budgetStore.expenses.filter(e =>
-    e.paymentMode === 'manual' || !e.paymentMode // Include legacy expenses without paymentMode
+    e.paymentMode === 'manual' ||
+    e.expenseType === 'budget' ||
+    !e.paymentMode // Include legacy expenses without paymentMode
   )
 })
 

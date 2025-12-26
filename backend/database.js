@@ -253,6 +253,13 @@ function initializeDatabase() {
             db.exec(`ALTER TABLE recurring_expenses ADD COLUMN frontend_id TEXT`);
             console.log('✓ frontend_id column added');
         }
+
+        // Expense type column: 'bill' (has due dates) or 'budget' (envelope-style, no due date)
+        if (!recurringExpensesInfo.some(col => col.name === 'expense_type')) {
+            console.log('Adding expense_type column to recurring_expenses table...');
+            db.exec(`ALTER TABLE recurring_expenses ADD COLUMN expense_type TEXT DEFAULT 'bill'`);
+            console.log('✓ expense_type column added');
+        }
     } catch (error) {
         console.error('Recurring expenses migration error:', error);
     }

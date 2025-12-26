@@ -56,8 +56,44 @@
         </span>
       </div>
 
-      <!-- Due Date Selectors based on frequency -->
-      <div class="flex flex-wrap items-center gap-2">
+      <!-- Expense Type Selector -->
+      <div class="flex items-center gap-3 pt-1">
+        <span class="text-xs text-slate-500">Type:</span>
+        <div class="flex gap-1">
+          <button
+            type="button"
+            @click="budgetStore.updateExpense(expense.id, 'expenseType', 'bill')"
+            :class="[
+              'px-3 py-1.5 text-xs font-medium rounded-lg transition-all',
+              (!expense.expenseType || expense.expenseType === 'bill')
+                ? 'bg-blue-500 text-white'
+                : 'bg-white border border-slate-200 text-slate-600 hover:border-slate-300'
+            ]"
+            title="Fixed bill with specific due date"
+          >
+            Bill
+          </button>
+          <button
+            type="button"
+            @click="handleBudgetTypeSelect()"
+            :class="[
+              'px-3 py-1.5 text-xs font-medium rounded-lg transition-all',
+              expense.expenseType === 'budget'
+                ? 'bg-purple-500 text-white'
+                : 'bg-white border border-slate-200 text-slate-600 hover:border-slate-300'
+            ]"
+            title="Budget envelope - no due date, variable spending"
+          >
+            Budget
+          </button>
+        </div>
+        <span v-if="expense.expenseType === 'budget'" class="text-xs text-purple-600 font-medium">
+          Envelope
+        </span>
+      </div>
+
+      <!-- Due Date Selectors based on frequency - only for bill types -->
+      <div v-if="expense.expenseType !== 'budget'" class="flex flex-wrap items-center gap-2">
         <!-- Weekly: Day of week -->
         <template v-if="expense.frequency === 'weekly'">
           <span class="text-xs text-slate-500">Due every</span>
@@ -137,8 +173,8 @@
         </template>
       </div>
 
-      <!-- Payment Mode Selector -->
-      <div class="flex items-center gap-3 pt-1">
+      <!-- Payment Mode Selector - only for bill types -->
+      <div v-if="expense.expenseType !== 'budget'" class="flex items-center gap-3 pt-1">
         <span class="text-xs text-slate-500">Payment mode:</span>
         <div class="flex gap-1">
           <button
@@ -170,6 +206,13 @@
         </div>
         <span v-if="expense.paymentMode === 'manual'" class="text-xs text-amber-600 font-medium">
           Variable amount
+        </span>
+      </div>
+
+      <!-- Budget envelope info -->
+      <div v-else class="px-3 py-2 bg-purple-50 rounded-lg border border-purple-100">
+        <span class="text-xs text-purple-700">
+          Log purchases as you spend - amounts can vary from budget
         </span>
       </div>
     </div>
@@ -222,6 +265,12 @@ defineEmits(['remove'])
 const confirmingDelete = ref(false)
 
 const budgetStore = useBudgetStore()
+
+// Handle switching to budget type - also sets payment mode to manual
+function handleBudgetTypeSelect() {
+  budgetStore.updateExpense(props.expense.id, 'expenseType', 'budget')
+  budgetStore.updateExpense(props.expense.id, 'paymentMode', 'manual')
+}
 
 // Days of week starting Monday (value is JS day index: 0=Sun, 1=Mon, etc.)
 const daysOfWeek = [
