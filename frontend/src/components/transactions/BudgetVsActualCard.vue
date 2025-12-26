@@ -1,7 +1,26 @@
 <template>
   <div class="bg-white rounded-3xl shadow-sm border border-gray-100 p-6">
     <div class="flex items-center justify-between mb-4">
-      <h3 class="text-lg font-semibold text-slate-800">Budget vs Actual</h3>
+      <div class="flex items-center gap-2">
+        <h3 class="text-lg font-semibold text-slate-800">Budget vs Actual</h3>
+        <!-- Info tooltip -->
+        <div class="relative group">
+          <button
+            type="button"
+            class="p-1 text-slate-400 hover:text-slate-600 rounded-full hover:bg-slate-100 transition-colors"
+          >
+            <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+              <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zM8.94 6.94a.75.75 0 11-1.061-1.061 3 3 0 112.871 5.026v.345a.75.75 0 01-1.5 0v-.5c0-.72.57-1.172 1.081-1.287A1.5 1.5 0 108.94 6.94zM10 15a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd" />
+            </svg>
+          </button>
+          <div class="absolute left-0 top-full mt-2 w-64 p-3 bg-slate-800 text-white text-xs rounded-xl shadow-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-10">
+            <p class="font-medium mb-1">Rolling {{ weeks }}-week period</p>
+            <p class="text-slate-300">Compares your spending from the last {{ weeks }} weeks against your weekly budget × {{ weeks }}.</p>
+            <p class="text-slate-400 mt-2">Some weeks you'll be over, some under — it smooths out over time!</p>
+            <div class="absolute -top-1.5 left-3 w-3 h-3 bg-slate-800 rotate-45"></div>
+          </div>
+        </div>
+      </div>
       <select
         v-model="weeks"
         @change="$emit('change-weeks', weeks)"
