@@ -2384,6 +2384,36 @@ setTimeout(() => {
 }, 5000);
 
 // Start server
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
     console.log(`Budget Calculator API running on port ${PORT}`);
 });
+
+// Graceful shutdown handling
+function gracefulShutdown(signal) {
+    console.log(`\n[SHUTDOWN] ${signal} received, shutting down gracefully...`);
+
+    // Stop accepting new connections
+    server.close(() => {
+        console.log('[SHUTDOWN] HTTP server closed');
+
+        // Close database connection
+        try {
+            db.close();
+            console.log('[SHUTDOWN] Database connection closed');
+        } catch (err) {
+            console.error('[SHUTDOWN] Error closing database:', err);
+        }
+
+        console.log('[SHUTDOWN] Graceful shutdown complete');
+        process.exit(0);
+    });
+
+    // Force exit after 10 seconds if graceful shutdown fails
+    setTimeout(() => {
+        console.error('[SHUTDOWN] Forcing exit after timeout');
+        process.exit(1);
+    }, 10000);
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));

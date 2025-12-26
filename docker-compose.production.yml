@@ -5,6 +5,7 @@ services:
       dockerfile: Dockerfile
     container_name: budget-backend
     restart: unless-stopped
+    stop_grace_period: 15s
     ports:
       - "3200:3200"
     volumes:
