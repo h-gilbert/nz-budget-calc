@@ -2197,7 +2197,11 @@ export const useBudgetStore = defineStore('budget', () => {
     }
 
     const transactionDate = date || formatDateLocal(new Date())
-    const weeklyBudget = getWeeklyAmount(expense)
+
+    // Only set budget_amount for budget envelopes (for variance tracking)
+    // Bills compare against fixed amounts, not weekly budgets, so don't set budget_amount
+    const isBudgetEnvelope = expense.expenseType === 'budget'
+    const weeklyBudget = isBudgetEnvelope ? getWeeklyAmount(expense) : null
 
     return createTransaction({
       account_id: expense.accountId || null,

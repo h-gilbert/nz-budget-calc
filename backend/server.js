@@ -1277,11 +1277,12 @@ app.get('/api/transactions/budget-summary', authenticateToken, (req, res) => {
             startDate = formatDateLocal(start);
         }
 
-        // Get manual expenses and budget envelopes (either specific or all)
+        // Get only budget envelopes for budget vs actual tracking
+        // Bills (even manual ones) are tracked separately as they compare against fixed amounts, not weekly budgets
         let expenseQuery = `
             SELECT id, description, amount, frequency, payment_mode, expense_type
             FROM recurring_expenses
-            WHERE user_id = ? AND (payment_mode = 'manual' OR expense_type = 'budget') AND is_active = 1
+            WHERE user_id = ? AND expense_type = 'budget' AND is_active = 1
         `;
         const expenseParams = [userId];
         if (expense_id) {

@@ -114,9 +114,9 @@
               />
             </div>
 
-            <!-- Budget Status -->
+            <!-- Budget Status for Budget Envelopes -->
             <div
-              v-if="selectedExpense && form.amount > 0"
+              v-if="selectedExpense && form.amount > 0 && isBudgetEnvelope"
               class="p-4 rounded-2xl"
               :class="budgetStatus.overBudget ? 'bg-amber-50' : 'bg-teal-50'"
             >
@@ -146,8 +146,45 @@
               </div>
             </div>
 
-            <!-- Quick Amount Buttons -->
-            <div v-if="selectedExpense" class="flex flex-wrap gap-2">
+            <!-- Payment Info for Bills -->
+            <div
+              v-if="selectedExpense && !isBudgetEnvelope"
+              class="p-4 rounded-2xl bg-blue-50"
+            >
+              <div class="space-y-2">
+                <div class="flex justify-between text-sm">
+                  <span class="text-blue-700">Expected Payment</span>
+                  <span class="font-medium text-blue-800">
+                    ${{ formatAmount(selectedExpense.amount) }}/{{ formatFrequency(selectedExpense.frequency) }}
+                  </span>
+                </div>
+                <div v-if="form.amount > 0" class="flex justify-between text-sm">
+                  <span class="text-blue-700">You're paying</span>
+                  <span class="font-medium text-blue-800">${{ form.amount.toFixed(2) }}</span>
+                </div>
+                <div v-if="form.amount > 0 && billPaymentStatus.difference !== 0" class="pt-2 border-t border-blue-200">
+                  <div class="flex justify-between">
+                    <span class="font-medium text-blue-800">
+                      {{ billPaymentStatus.difference > 0 ? 'Paying extra' : 'Paying less' }}
+                    </span>
+                    <span class="font-bold text-lg" :class="billPaymentStatus.difference > 0 ? 'text-amber-600' : 'text-blue-600'">
+                      {{ billPaymentStatus.difference > 0 ? '+' : '-' }}${{ Math.abs(billPaymentStatus.difference).toFixed(2) }}
+                    </span>
+                  </div>
+                </div>
+                <div v-else-if="form.amount > 0" class="pt-2 border-t border-blue-200">
+                  <div class="flex justify-between items-center">
+                    <span class="font-medium text-green-700">Exact amount</span>
+                    <svg class="w-5 h-5 text-green-600" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                      <path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd" />
+                    </svg>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Quick Amount Buttons for Budget Envelopes -->
+            <div v-if="selectedExpense && isBudgetEnvelope" class="flex flex-wrap gap-2">
               <button
                 v-for="amount in quickAmounts"
                 :key="amount"
@@ -163,6 +200,17 @@
                 class="px-3 py-1.5 text-sm font-medium text-teal-600 bg-teal-50 hover:bg-teal-100 rounded-lg transition-colors"
               >
                 Use budget (${{ getWeeklyBudget(selectedExpense).toFixed(2) }})
+              </button>
+            </div>
+
+            <!-- Quick Amount Button for Bills -->
+            <div v-if="selectedExpense && !isBudgetEnvelope" class="flex flex-wrap gap-2">
+              <button
+                type="button"
+                @click="form.amount = parseFloat(selectedExpense.amount)"
+                class="px-3 py-1.5 text-sm font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors"
+              >
+                Pay full amount (${{ formatAmount(selectedExpense.amount) }})
               </button>
             </div>
 
@@ -282,12 +330,17 @@ const selectedExpense = computed(() => {
   return budgetStore.expenses.find(e => e.id === form.value.expenseId)
 })
 
+// Check if selected expense is a budget envelope
+const isBudgetEnvelope = computed(() => {
+  return selectedExpense.value?.expenseType === 'budget'
+})
+
 // Get weekly budget for an expense
 function getWeeklyBudget(expense) {
   return budgetStore.getWeeklyAmount(expense)
 }
 
-// Budget status calculation
+// Budget status calculation (for budget envelopes)
 const budgetStatus = computed(() => {
   if (!selectedExpense.value) {
     return { weeklyBudget: 0, variance: 0, overBudget: false }
@@ -300,6 +353,21 @@ const budgetStatus = computed(() => {
     weeklyBudget,
     variance,
     overBudget: variance > 0
+  }
+})
+
+// Bill payment status (for bills - compares against actual bill amount, not weekly-ised)
+const billPaymentStatus = computed(() => {
+  if (!selectedExpense.value) {
+    return { expectedAmount: 0, difference: 0 }
+  }
+
+  const expectedAmount = parseFloat(selectedExpense.value.amount) || 0
+  const difference = form.value.amount - expectedAmount
+
+  return {
+    expectedAmount,
+    difference
   }
 })
 
