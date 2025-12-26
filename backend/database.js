@@ -170,8 +170,48 @@ function initializeDatabase() {
             db.exec(`ALTER TABLE accounts ADD COLUMN goal_priority INTEGER DEFAULT 1`);
             console.log('✓ goal_priority column added');
         }
+
+        // Sync support columns
+        if (!accountTableInfo.some(col => col.name === 'frontend_id')) {
+            console.log('Adding frontend_id column to accounts table...');
+            db.exec(`ALTER TABLE accounts ADD COLUMN frontend_id TEXT`);
+            console.log('✓ frontend_id column added');
+        }
+
+        if (!accountTableInfo.some(col => col.name === 'budget_id')) {
+            console.log('Adding budget_id column to accounts table...');
+            db.exec(`ALTER TABLE accounts ADD COLUMN budget_id INTEGER REFERENCES budget_data(id) ON DELETE CASCADE`);
+            console.log('✓ budget_id column added');
+        }
     } catch (error) {
         console.error('Account table migration error:', error);
+    }
+
+    // Migration: Add new columns to automation_state if they don't exist
+    try {
+        const automationTableInfo = db.prepare("PRAGMA table_info(automation_state)").all();
+
+        if (automationTableInfo.length > 0) {
+            if (!automationTableInfo.some(col => col.name === 'auto_payment_enabled')) {
+                console.log('Adding auto_payment_enabled column to automation_state table...');
+                db.exec(`ALTER TABLE automation_state ADD COLUMN auto_payment_enabled BOOLEAN DEFAULT 1`);
+                console.log('✓ auto_payment_enabled column added');
+            }
+
+            if (!automationTableInfo.some(col => col.name === 'last_payment_check_date')) {
+                console.log('Adding last_payment_check_date column to automation_state table...');
+                db.exec(`ALTER TABLE automation_state ADD COLUMN last_payment_check_date DATE`);
+                console.log('✓ last_payment_check_date column added');
+            }
+
+            if (!automationTableInfo.some(col => col.name === 'scheduler_last_run')) {
+                console.log('Adding scheduler_last_run column to automation_state table...');
+                db.exec(`ALTER TABLE automation_state ADD COLUMN scheduler_last_run DATETIME`);
+                console.log('✓ scheduler_last_run column added');
+            }
+        }
+    } catch (error) {
+        console.error('Automation state table migration error:', error);
     }
 
     // Recurring expenses table
@@ -197,6 +237,26 @@ function initializeDatabase() {
         )
     `);
 
+    // Migration: Add payment_mode to recurring_expenses if it doesn't exist
+    try {
+        const recurringExpensesInfo = db.prepare("PRAGMA table_info(recurring_expenses)").all();
+
+        if (!recurringExpensesInfo.some(col => col.name === 'payment_mode')) {
+            console.log('Adding payment_mode column to recurring_expenses table...');
+            db.exec(`ALTER TABLE recurring_expenses ADD COLUMN payment_mode TEXT DEFAULT 'automatic'`);
+            console.log('✓ payment_mode column added');
+        }
+
+        // Sync support column
+        if (!recurringExpensesInfo.some(col => col.name === 'frontend_id')) {
+            console.log('Adding frontend_id column to recurring_expenses table...');
+            db.exec(`ALTER TABLE recurring_expenses ADD COLUMN frontend_id TEXT`);
+            console.log('✓ frontend_id column added');
+        }
+    } catch (error) {
+        console.error('Recurring expenses migration error:', error);
+    }
+
     // Transactions table
     db.exec(`
         CREATE TABLE IF NOT EXISTS transactions (
@@ -217,12 +277,37 @@ function initializeDatabase() {
         )
     `);
 
-    // Transfer schedules table
+    // Migration: Add new columns to transactions if they don't exist
+    try {
+        const transactionsInfo = db.prepare("PRAGMA table_info(transactions)").all();
+
+        if (!transactionsInfo.some(col => col.name === 'status')) {
+            console.log('Adding status column to transactions table...');
+            db.exec(`ALTER TABLE transactions ADD COLUMN status TEXT DEFAULT 'completed'`);
+            console.log('✓ status column added');
+        }
+
+        if (!transactionsInfo.some(col => col.name === 'budget_amount')) {
+            console.log('Adding budget_amount column to transactions table...');
+            db.exec(`ALTER TABLE transactions ADD COLUMN budget_amount REAL`);
+            console.log('✓ budget_amount column added');
+        }
+
+        if (!transactionsInfo.some(col => col.name === 'notes')) {
+            console.log('Adding notes column to transactions table...');
+            db.exec(`ALTER TABLE transactions ADD COLUMN notes TEXT`);
+            console.log('✓ notes column added');
+        }
+    } catch (error) {
+        console.error('Transactions table migration error:', error);
+    }
+
+    // Transfer schedules table (from_account_id is nullable - transfers may not have a source account)
     db.exec(`
         CREATE TABLE IF NOT EXISTS transfer_schedules (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
-            from_account_id INTEGER NOT NULL,
+            from_account_id INTEGER,
             to_account_id INTEGER NOT NULL,
             amount REAL NOT NULL,
             frequency TEXT NOT NULL DEFAULT 'weekly',
@@ -239,13 +324,13 @@ function initializeDatabase() {
         )
     `);
 
-    // Transfers table
+    // Transfers table (from_account_id is nullable - transfers may not have a source account)
     db.exec(`
         CREATE TABLE IF NOT EXISTS transfers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
             schedule_id INTEGER,
-            from_account_id INTEGER NOT NULL,
+            from_account_id INTEGER,
             to_account_id INTEGER NOT NULL,
             amount REAL NOT NULL,
             scheduled_date DATE NOT NULL,
@@ -259,6 +344,78 @@ function initializeDatabase() {
             FOREIGN KEY (to_account_id) REFERENCES accounts(id)
         )
     `);
+
+    // Migration: Fix from_account_id constraint in transfer tables (allow NULL)
+    try {
+        // Check if from_account_id is NOT NULL in transfer_schedules
+        const scheduleTableInfo = db.prepare("PRAGMA table_info(transfer_schedules)").all();
+        const scheduleFromCol = scheduleTableInfo.find(col => col.name === 'from_account_id');
+
+        if (scheduleFromCol && scheduleFromCol.notnull === 1) {
+            // Check if table is empty before recreating
+            const scheduleCount = db.prepare("SELECT COUNT(*) as count FROM transfer_schedules").get();
+            if (scheduleCount.count === 0) {
+                console.log('Recreating transfer_schedules table to allow NULL from_account_id...');
+                db.exec(`DROP TABLE transfer_schedules`);
+                db.exec(`
+                    CREATE TABLE transfer_schedules (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER NOT NULL,
+                        from_account_id INTEGER,
+                        to_account_id INTEGER NOT NULL,
+                        amount REAL NOT NULL,
+                        frequency TEXT NOT NULL DEFAULT 'weekly',
+                        day_of_week INTEGER,
+                        start_date DATE NOT NULL,
+                        standardization_date DATE,
+                        is_active BOOLEAN DEFAULT 1,
+                        is_auto_calculated BOOLEAN DEFAULT 1,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                        FOREIGN KEY (from_account_id) REFERENCES accounts(id) ON DELETE CASCADE,
+                        FOREIGN KEY (to_account_id) REFERENCES accounts(id) ON DELETE CASCADE
+                    )
+                `);
+                console.log('✓ transfer_schedules table recreated');
+            }
+        }
+
+        // Check if from_account_id is NOT NULL in transfers
+        const transferTableInfo = db.prepare("PRAGMA table_info(transfers)").all();
+        const transferFromCol = transferTableInfo.find(col => col.name === 'from_account_id');
+
+        if (transferFromCol && transferFromCol.notnull === 1) {
+            // Check if table is empty before recreating
+            const transferCount = db.prepare("SELECT COUNT(*) as count FROM transfers").get();
+            if (transferCount.count === 0) {
+                console.log('Recreating transfers table to allow NULL from_account_id...');
+                db.exec(`DROP TABLE transfers`);
+                db.exec(`
+                    CREATE TABLE transfers (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER NOT NULL,
+                        schedule_id INTEGER,
+                        from_account_id INTEGER,
+                        to_account_id INTEGER NOT NULL,
+                        amount REAL NOT NULL,
+                        scheduled_date DATE NOT NULL,
+                        executed_date DATE,
+                        status TEXT DEFAULT 'scheduled',
+                        notes TEXT,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                        FOREIGN KEY (schedule_id) REFERENCES transfer_schedules(id) ON DELETE SET NULL,
+                        FOREIGN KEY (from_account_id) REFERENCES accounts(id),
+                        FOREIGN KEY (to_account_id) REFERENCES accounts(id)
+                    )
+                `);
+                console.log('✓ transfers table recreated');
+            }
+        }
+    } catch (error) {
+        console.error('Transfer tables migration error:', error);
+    }
 
     // Automation state table - tracks when automations were last processed
     db.exec(`
@@ -296,6 +453,48 @@ function initializeDatabase() {
         )
     `);
 
+    // Expense auto-payments table - tracks scheduled and executed automatic payments
+    db.exec(`
+        CREATE TABLE IF NOT EXISTS expense_auto_payments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            expense_id TEXT NOT NULL,
+            budget_id INTEGER NOT NULL,
+            scheduled_date DATE NOT NULL,
+            executed_date DATETIME,
+            status TEXT DEFAULT 'scheduled',
+            amount REAL NOT NULL,
+            balance_before REAL,
+            balance_after REAL,
+            went_negative BOOLEAN DEFAULT 0,
+            error_message TEXT,
+            retry_count INTEGER DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY (budget_id) REFERENCES budget_data(id) ON DELETE CASCADE
+        )
+    `);
+
+    // Scheduler runs table - tracks each automatic payment scheduler execution
+    db.exec(`
+        CREATE TABLE IF NOT EXISTS scheduler_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_date DATE NOT NULL,
+            started_at DATETIME NOT NULL,
+            completed_at DATETIME,
+            status TEXT DEFAULT 'running',
+            is_catchup BOOLEAN DEFAULT 0,
+            users_processed INTEGER DEFAULT 0,
+            expenses_processed INTEGER DEFAULT 0,
+            transfers_processed INTEGER DEFAULT 0,
+            transfers_generated INTEGER DEFAULT 0,
+            errors_count INTEGER DEFAULT 0,
+            error_details TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    `);
+
     // Create indexes
     db.exec(`
         CREATE INDEX IF NOT EXISTS idx_accounts_user_id ON accounts(user_id);
@@ -314,6 +513,12 @@ function initializeDatabase() {
         CREATE INDEX IF NOT EXISTS idx_payment_history_user_id ON payment_history(user_id);
         CREATE INDEX IF NOT EXISTS idx_payment_history_expense_id ON payment_history(expense_id);
         CREATE INDEX IF NOT EXISTS idx_payment_history_payment_date ON payment_history(payment_date);
+        CREATE INDEX IF NOT EXISTS idx_expense_auto_payments_user_id ON expense_auto_payments(user_id);
+        CREATE INDEX IF NOT EXISTS idx_expense_auto_payments_scheduled_date ON expense_auto_payments(scheduled_date);
+        CREATE INDEX IF NOT EXISTS idx_expense_auto_payments_status ON expense_auto_payments(status);
+        CREATE INDEX IF NOT EXISTS idx_expense_auto_payments_expense_id ON expense_auto_payments(expense_id);
+        CREATE INDEX IF NOT EXISTS idx_scheduler_runs_run_date ON scheduler_runs(run_date);
+        CREATE INDEX IF NOT EXISTS idx_scheduler_runs_status ON scheduler_runs(status);
     `);
 
     console.log('Database initialized successfully');

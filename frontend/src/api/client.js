@@ -107,36 +107,6 @@ export const budgetAPI = {
 }
 
 // ============================================
-// ACCOUNT API
-// ============================================
-
-export const accountAPI = {
-  async create(accountData) {
-    return apiClient.post('/accounts', accountData)
-  },
-
-  async getAll() {
-    return apiClient.get('/accounts')
-  },
-
-  async getById(id) {
-    return apiClient.get(`/accounts/${id}`)
-  },
-
-  async update(id, updates) {
-    return apiClient.put(`/accounts/${id}`, updates)
-  },
-
-  async delete(id) {
-    return apiClient.delete(`/accounts/${id}`)
-  },
-
-  async getBalanceHistory(id, days = 30) {
-    return apiClient.get(`/accounts/${id}/balance-history?days=${days}`)
-  }
-}
-
-// ============================================
 // EXPENSE API
 // ============================================
 
@@ -174,31 +144,51 @@ export const expenseAPI = {
 // ============================================
 
 export const transactionAPI = {
-  async create(transactionData) {
-    return apiClient.post('/transactions', transactionData)
-  },
-
   async getAll(filters = {}) {
     const params = new URLSearchParams()
-    if (filters.account_id) params.append('account_id', filters.account_id)
-    if (filters.transaction_type) params.append('transaction_type', filters.transaction_type)
-    if (filters.start_date) params.append('start_date', filters.start_date)
-    if (filters.end_date) params.append('end_date', filters.end_date)
-    if (filters.limit) params.append('limit', filters.limit)
-
+    Object.entries(filters).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== '') {
+        params.append(key, value)
+      }
+    })
     return apiClient.get(`/transactions?${params.toString()}`)
+  },
+
+  async getById(id) {
+    return apiClient.get(`/transactions/${id}`)
   },
 
   async getWeekly(date) {
     return apiClient.get(`/transactions/weekly/${date}`)
   },
 
-  async delete(id) {
-    return apiClient.delete(`/transactions/${id}`)
+  async getUpcoming(days = 30) {
+    return apiClient.get(`/transactions/upcoming?days=${days}`)
+  },
+
+  async getBudgetSummary(options = {}) {
+    const params = new URLSearchParams()
+    if (options.expense_id) params.append('expense_id', options.expense_id)
+    if (options.from_date) params.append('from_date', options.from_date)
+    if (options.to_date) params.append('to_date', options.to_date)
+    if (options.weeks) params.append('weeks', options.weeks)
+    return apiClient.get(`/transactions/budget-summary?${params.toString()}`)
+  },
+
+  async create(transactionData) {
+    return apiClient.post('/transactions', transactionData)
   },
 
   async update(id, updates) {
     return apiClient.put(`/transactions/${id}`, updates)
+  },
+
+  async delete(id) {
+    return apiClient.delete(`/transactions/${id}`)
+  },
+
+  async processDue() {
+    return apiClient.post('/transactions/process-due')
   }
 }
 
@@ -207,98 +197,16 @@ export const transactionAPI = {
 // ============================================
 
 export const transferAPI = {
-  async calculate(weeks = 16) {
-    return apiClient.post('/transfers/calculate', { weeks })
+  async syncSchedules(recommendations) {
+    return apiClient.post('/transfer-schedules/sync', { recommendations })
   },
 
-  async createSchedule(scheduleData) {
-    return apiClient.post('/transfer-schedules', scheduleData)
+  async getSchedules(activeOnly = true) {
+    return apiClient.get(`/transfer-schedules?active_only=${activeOnly}`)
   },
 
-  async getSchedules() {
-    return apiClient.get('/transfer-schedules')
-  },
-
-  async generate(weeksAhead = 4) {
-    return apiClient.post('/transfers/generate', { weeks_ahead: weeksAhead })
-  },
-
-  async getUpcoming(days = 30) {
-    return apiClient.get(`/transfers/upcoming?days=${days}`)
-  },
-
-  async execute(id) {
-    return apiClient.post(`/transfers/${id}/execute`)
-  },
-
-  async update(id, updates) {
-    return apiClient.put(`/transfers/${id}`, updates)
-  },
-
-  async cancel(id) {
-    return apiClient.post(`/transfers/${id}/cancel`)
-  }
-}
-
-// ============================================
-// GOAL API
-// ============================================
-
-export const goalAPI = {
-  async calculateTimeline(data) {
-    return apiClient.post('/goals/calculate-timeline', data)
-  },
-
-  async createTransfers(data) {
-    return apiClient.post('/goals/create-transfers', data)
-  }
-}
-
-// ============================================
-// AUTOMATION API
-// ============================================
-
-export const automationAPI = {
-  async getState() {
-    return apiClient.get('/automation/state')
-  },
-
-  async updateState(stateData) {
-    return apiClient.put('/automation/state', stateData)
-  },
-
-  async getPending() {
-    return apiClient.get('/automation/pending')
-  }
-}
-
-// ============================================
-// PAYMENT API
-// ============================================
-
-export const paymentAPI = {
-  async getHistory(options = {}) {
-    const params = new URLSearchParams()
-    if (options.limit) params.append('limit', options.limit)
-    if (options.offset) params.append('offset', options.offset)
-    if (options.expenseId) params.append('expenseId', options.expenseId)
-    return apiClient.get(`/payments/history?${params.toString()}`)
-  },
-
-  async recordPayment(expenseId, paymentData) {
-    return apiClient.post(`/expenses/${expenseId}/pay`, paymentData)
-  },
-
-  async skipPayment(expenseId, skipData) {
-    return apiClient.post(`/expenses/${expenseId}/skip`, skipData)
-  },
-
-  async update(id, updates) {
-    return apiClient.put(`/payments/${id}`, updates)
-  },
-
-  async delete(id) {
-    return apiClient.delete(`/payments/${id}`)
+  async processDue() {
+    return apiClient.post('/transfers/process-due')
   }
 }
 

@@ -1,746 +1,153 @@
 <template>
-  <div class="transfer-planning-card">
-    <div class="card-header">
-      <h3>Transfer Planning</h3>
-      <p class="subtitle">Reach equilibrium with your expense account</p>
-    </div>
+  <div class="bg-white rounded-3xl shadow-sm border border-gray-100 p-6">
+    <h2 class="text-lg font-semibold text-slate-800 mb-4">Weekly Transfer Plan</h2>
 
-    <div v-if="error" class="error-message">
-      {{ error }}
-    </div>
-
-    <div v-else-if="planData" class="card-content">
-      <!-- Summary Section -->
-      <div class="summary-section">
-        <div class="summary-item">
-          <span class="label">Starting Balance:</span>
-          <span class="value">{{ formatCurrency(planData.startingBalance) }}</span>
-        </div>
-        <div v-if="planData.isWeekAhead" class="summary-item info">
-          <span class="label">Safety Buffer Active:</span>
-          <span class="value">1-Week Ahead</span>
-          <small class="buffer-note">Transfers calculated to always keep next week's expenses (~{{ formatCurrency(planData.weekAheadBuffer) }}) ready</small>
-        </div>
-        <div class="summary-item">
-          <span class="label">Starting Date:</span>
-          <span class="value">{{ formatDate(planData.startingDate) }}</span>
-        </div>
-        <div class="summary-item highlight">
-          <span class="label">Equilibrium Weekly Transfer:</span>
-          <span class="value positive">{{ formatCurrency(planData.equilibriumTransfer) }}</span>
-        </div>
-        <div v-if="planData.equilibriumWeek" class="summary-item success">
-          <span class="label">Equilibrium Reached:</span>
-          <span class="value">Week {{ planData.equilibriumWeek }}</span>
-        </div>
-        <div v-else class="summary-item warning">
-          <span class="label">Status:</span>
-          <span class="value">More weeks needed to reach equilibrium</span>
+    <!-- Summary bar -->
+    <div class="mb-6">
+      <div class="flex justify-between text-sm mb-2">
+        <span class="text-slate-600">Total Transfers</span>
+        <span class="font-mono font-medium">
+          ${{ formatMoney(recommendations.totalRecommended) }} / ${{ formatMoney(recommendations.weeklyNet) }}
+        </span>
+      </div>
+      <div class="h-4 bg-slate-100 rounded-full overflow-hidden">
+        <div class="h-full flex">
+          <!-- Expenses (all expenses weekly-ised) -->
+          <div
+            class="bg-slate-400 transition-all"
+            :style="{ width: barWidth(recommendations.totalWeeklyExpenses) }"
+          ></div>
+          <!-- Acceleration -->
+          <div
+            class="bg-teal-400 transition-all"
+            :style="{ width: barWidth(recommendations.totalAcceleration) }"
+          ></div>
         </div>
       </div>
+      <div class="flex justify-between mt-2 text-xs">
+        <div class="flex items-center gap-4">
+          <span class="flex items-center gap-1">
+            <span class="w-3 h-3 rounded bg-slate-400"></span>
+            <span class="text-slate-600">Expenses</span>
+          </span>
+          <span class="flex items-center gap-1">
+            <span class="w-3 h-3 rounded bg-teal-400"></span>
+            <span class="text-slate-600">Acceleration</span>
+          </span>
+        </div>
+        <span
+          class="font-medium"
+          :class="recommendations.isWithinBudget ? 'text-slate-500' : 'text-red-500'"
+        >
+          {{ Math.round((recommendations.totalRecommended / recommendations.weeklyNet) * 100) }}%
+        </span>
+      </div>
+    </div>
 
-      <!-- Transfer Schedule Table -->
-      <div class="schedule-section">
-        <h4>Transfer Schedule (First {{ displayWeeks }} Weeks)</h4>
-        <div class="schedule-controls">
-          <span class="control-label">Show weeks:</span>
-          <div class="week-selector">
-            <button
-              v-for="option in weekOptions"
-              :key="option.value"
-              @click="displayWeeks = option.value"
-              :class="['week-option', { 'active': displayWeeks === option.value }]"
-            >
-              {{ option.label }}
-            </button>
+    <!-- Per-account breakdown -->
+    <div class="space-y-3">
+      <div
+        v-for="rec in recommendations.recommendations.filter(r => r.recommendedTransfer > 0)"
+        :key="rec.accountId"
+        class="p-4 bg-slate-50 rounded-xl"
+      >
+        <div class="flex justify-between items-center mb-2">
+          <span class="font-medium text-slate-800">{{ rec.accountName || 'Unnamed' }}</span>
+          <span class="font-mono font-semibold text-teal-600">
+            ${{ formatMoney(rec.recommendedTransfer) }}/wk
+          </span>
+        </div>
+
+        <!-- Mini stacked bar -->
+        <div class="h-2 bg-slate-200 rounded-full overflow-hidden">
+          <div class="h-full flex">
+            <div
+              class="bg-slate-400"
+              :style="{ width: accountBarWidth(rec, rec.weeklyEquilibrium) }"
+            ></div>
+            <div
+              class="bg-teal-400"
+              :style="{ width: accountBarWidth(rec, rec.acceleration) }"
+            ></div>
           </div>
         </div>
-        <div class="table-container">
-          <table class="schedule-table">
-            <thead>
-              <tr>
-                <th class="col-expand"></th>
-                <th>Week</th>
-                <th>Date</th>
-                <th>Items</th>
-                <th>Expenses Due</th>
-                <th>Transfer Amount</th>
-                <th>Catch-up Extra</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              <template v-for="week in displayedSchedule" :key="week.weekNumber">
-                <tr
-                  :class="{ 'equilibrium-reached': week.isEquilibrium, 'has-expenses': week.expenseDetails && week.expenseDetails.length > 0, 'main-row': true }"
-                  @click="toggleExpand(week.weekNumber)"
-                >
-                  <td class="col-expand">
-                    <span v-if="week.expenseDetails && week.expenseDetails.length > 0" class="expand-icon">
-                      {{ expandedRows.has(week.weekNumber) ? '▼' : '▶' }}
-                    </span>
-                  </td>
-                  <td>{{ week.weekNumber }}</td>
-                  <td>{{ formatDate(week.weekDate) }}</td>
-                  <td class="col-items">{{ week.expenseDetails ? week.expenseDetails.length : 0 }}</td>
-                  <td>{{ formatCurrency(week.expensesDue) }}</td>
-                  <td class="transfer-amount">
-                    {{ formatCurrency(week.transferAmount) }}
-                  </td>
-                  <td>
-                    <span v-if="week.catchUpAmount > 0" class="catch-up-badge">
-                      +{{ formatCurrency(week.catchUpAmount) }}
-                    </span>
-                    <span v-else class="equilibrium-badge">-</span>
-                  </td>
-                  <td>
-                    <span v-if="week.isEquilibrium" class="status-badge success">Equilibrium</span>
-                    <span v-else class="status-badge warning">Catching up</span>
-                  </td>
-                </tr>
-                <tr v-if="expandedRows.has(week.weekNumber)" class="detail-row">
-                  <td colspan="8">
-                    <!-- Show sub-account fund distribution if available -->
-                    <div v-if="week.subAccountDistribution && week.subAccountDistribution.length > 0" class="subaccount-distribution">
-                      <h4>Transfer Distribution to Sub-Accounts:</h4>
-                      <div class="distribution-grid">
-                        <div
-                          v-for="(dist, idx) in week.subAccountDistribution"
-                          :key="idx"
-                          class="distribution-card"
-                        >
-                          <div class="dist-header">
-                            <span class="dist-name">{{ dist.subAccountName }}</span>
-                            <span class="dist-amount">{{ formatCurrency(dist.transferAmount) }}</span>
-                          </div>
-                          <div class="dist-details">
-                            <div class="dist-stat">
-                              <span>Expenses:</span>
-                              <span>{{ formatCurrency(dist.expenses) }}</span>
-                            </div>
-                            <div class="dist-stat">
-                              <span>Current:</span>
-                              <span :class="{'text-warning': dist.currentBalance < dist.required, 'text-danger': dist.currentBalance < 0}">
-                                {{ formatCurrency(dist.currentBalance) }}
-                              </span>
-                            </div>
-                            <div class="dist-stat">
-                              <span>After Transfer:</span>
-                              <span class="text-success">{{ formatCurrency(dist.balanceAfter) }}</span>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                      <div class="distribution-total">
-                        <span>Total Distribution:</span>
-                        <span class="total-amount">{{ formatCurrency(week.transferAmount) }}</span>
-                      </div>
-                    </div>
 
-                    <!-- Fallback to expenses view if no sub-accounts -->
-                    <div v-else-if="week.expenseDetails && week.expenseDetails.length > 0" class="expense-details">
-                      <h4>Expenses Due This Week:</h4>
-                      <ul>
-                        <li v-for="(expense, expenseIndex) in week.expenseDetails" :key="expenseIndex">
-                          <span class="expense-name">{{ expense.name }}</span>
-                          <span class="expense-amount">{{ formatCurrency(expense.amount) }}</span>
-                          <span class="expense-frequency">({{ expense.frequency }})</span>
-                        </li>
-                      </ul>
-                    </div>
-
-                    <div v-else class="no-details">
-                      No expenses or distribution details for this week
-                    </div>
-                  </td>
-                </tr>
-              </template>
-            </tbody>
-          </table>
+        <!-- Breakdown text -->
+        <div class="flex gap-4 mt-2 text-xs text-slate-500">
+          <span v-if="rec.weeklyEquilibrium > 0">
+            Expenses: ${{ formatMoney(rec.weeklyEquilibrium) }}
+          </span>
+          <span v-if="rec.acceleration > 0" class="text-teal-600">
+            Accel: ${{ formatMoney(rec.acceleration) }}
+          </span>
         </div>
-      </div>
 
-      <!-- Info Box -->
-      <div class="info-box">
-        <p><strong>How it works:</strong></p>
-        <ul>
-          <li>Transfer the specified amount each week to your expense account</li>
-          <li>During catch-up phase, you'll transfer more than equilibrium to build reserves</li>
-          <li>Once equilibrium is reached, transfer the same amount each week</li>
-          <li>Transfers are capped at your take-home pay ({{ formatCurrency(planData.maxTransfer) }}/week)</li>
-        </ul>
+        <!-- Equilibrium date indicator (when acceleration is configured) -->
+        <div v-if="getEquilibriumInfo(rec.accountId)" class="mt-3 pt-3 border-t border-slate-200">
+          <div v-if="getEquilibriumInfo(rec.accountId).weeksUntilEquilibrium" class="flex items-center gap-2">
+            <svg class="w-4 h-4 text-teal-500" fill="currentColor" viewBox="0 0 20 20">
+              <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clip-rule="evenodd" />
+            </svg>
+            <span class="text-sm text-slate-600">
+              Equilibrium in <strong class="text-teal-600">{{ getEquilibriumInfo(rec.accountId).weeksUntilEquilibrium }} weeks</strong>
+              <span class="text-slate-400">({{ formatDate(getEquilibriumInfo(rec.accountId).equilibriumDate) }})</span>
+            </span>
+          </div>
+          <div v-else-if="getEquilibriumInfo(rec.accountId).acceleration > 0" class="flex items-center gap-2 text-amber-600">
+            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+              <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd" />
+            </svg>
+            <span class="text-sm">Equilibrium not reachable within 2 years at current acceleration</span>
+          </div>
+        </div>
       </div>
     </div>
 
-    <div v-else class="empty-state">
-      <p>Configure an expense account with a starting balance to see your transfer plan.</p>
+    <!-- No transfers message -->
+    <div
+      v-if="recommendations.recommendations.every(r => r.recommendedTransfer === 0)"
+      class="text-center py-6 text-slate-500"
+    >
+      No transfers scheduled. Link expenses to accounts to see recommendations.
     </div>
   </div>
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed } from 'vue'
 import { useBudgetStore } from '@/stores/budget'
 
 const budgetStore = useBudgetStore()
-const displayWeeks = ref(8)
-const planData = ref(null)
-const expandedRows = ref(new Set())
 
-const weekOptions = [
-  { value: 4, label: '4w' },
-  { value: 8, label: '8w' },
-  { value: 12, label: '12w' },
-  { value: 26, label: '26w' },
-  { value: 52, label: '52w' },
-  { value: 104, label: '104w' }
-]
+const recommendations = computed(() => budgetStore.calculateTransferRecommendations())
+const equilibriumDates = computed(() => budgetStore.calculateEquilibriumDate())
 
-async function loadPlanData() {
-  if (!budgetStore.hasCalculated) {
-    planData.value = null
-    return
-  }
-
-  const expenseAccount = budgetStore.accounts.find(a => a.isExpenseAccount)
-  if (!expenseAccount) {
-    planData.value = null
-    return
-  }
-
-  // Check if balance exists (it can be 0, which is valid)
-  if (expenseAccount.balance === null || expenseAccount.balance === undefined) {
-    planData.value = null
-    return
-  }
-
-  try {
-    planData.value = await budgetStore.calculateCatchUpSchedule(52)
-  } catch (err) {
-    console.error('Error calculating catch-up schedule:', err)
-    planData.value = null
-  }
+function getEquilibriumInfo(accountId) {
+  return equilibriumDates.value.find(e => e.accountId === accountId && e.acceleration > 0)
 }
 
-// Watch for changes and reload
-watch(() => budgetStore.hasCalculated, loadPlanData, { immediate: true })
-
-const error = computed(() => {
-  if (planData.value && planData.value.error) {
-    return planData.value.error
-  }
-  return null
-})
-
-const displayedSchedule = computed(() => {
-  if (!planData.value || !planData.value.schedule) return []
-  return planData.value.schedule.slice(0, displayWeeks.value)
-})
-
-function toggleExpand(weekNumber) {
-  if (expandedRows.value.has(weekNumber)) {
-    expandedRows.value.delete(weekNumber)
-  } else {
-    expandedRows.value.add(weekNumber)
-  }
+function barWidth(amount) {
+  const weeklyNet = recommendations.value.weeklyNet || 1
+  const percentage = Math.min(100, (amount / weeklyNet) * 100)
+  return `${percentage}%`
 }
 
-// Clear expanded rows when displayWeeks changes
-watch(displayWeeks, () => {
-  expandedRows.value.clear()
-})
-
-function formatCurrency(amount) {
-  return new Intl.NumberFormat('en-NZ', {
-    style: 'currency',
-    currency: 'NZD',
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2
-  }).format(amount)
+function accountBarWidth(rec, amount) {
+  const total = rec.recommendedTransfer || 1
+  const percentage = (amount / total) * 100
+  return `${percentage}%`
 }
 
-function formatDate(dateString) {
-  const date = new Date(dateString)
-  return date.toLocaleDateString('en-NZ', {
+function formatMoney(value) {
+  return (value || 0).toLocaleString('en-NZ', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+function formatDate(date) {
+  if (!date) return ''
+  return new Date(date).toLocaleDateString('en-NZ', {
     day: 'numeric',
     month: 'short',
     year: 'numeric'
   })
 }
 </script>
-
-<style scoped>
-.transfer-planning-card {
-  background: white;
-  border-radius: 8px;
-  padding: 1.5rem;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-  margin-bottom: 1.5rem;
-}
-
-.card-header {
-  margin-bottom: 1.5rem;
-  border-bottom: 2px solid #e0e0e0;
-  padding-bottom: 1rem;
-}
-
-.card-header h3 {
-  margin: 0 0 0.5rem 0;
-  color: #2c3e50;
-  font-size: 1.5rem;
-}
-
-.subtitle {
-  margin: 0;
-  color: #6c757d;
-  font-size: 0.9rem;
-}
-
-.error-message {
-  background: #fff3cd;
-  border: 1px solid #ffc107;
-  color: #856404;
-  padding: 1rem;
-  border-radius: 4px;
-  margin-bottom: 1rem;
-}
-
-.summary-section {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-  gap: 1rem;
-  margin-bottom: 2rem;
-  padding: 1rem;
-  background: #f8f9fa;
-  border-radius: 6px;
-}
-
-.summary-item {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-}
-
-.summary-item .label {
-  font-size: 0.85rem;
-  color: #6c757d;
-  font-weight: 500;
-}
-
-.summary-item .value {
-  font-size: 1.1rem;
-  font-weight: 600;
-  color: #2c3e50;
-}
-
-.summary-item.highlight {
-  background: #e3f2fd;
-  padding: 0.75rem;
-  border-radius: 4px;
-  border: 2px solid #2196f3;
-}
-
-.summary-item.highlight .value {
-  font-size: 1.3rem;
-  color: #1976d2;
-}
-
-.summary-item.success {
-  background: #d4edda;
-  padding: 0.75rem;
-  border-radius: 4px;
-}
-
-.summary-item.success .value {
-  color: #28a745;
-}
-
-.summary-item.warning {
-  background: #fff3cd;
-  padding: 0.75rem;
-  border-radius: 4px;
-}
-
-.summary-item.warning .value {
-  color: #856404;
-}
-
-.summary-item.info {
-  background: #e7f3ff;
-  padding: 0.75rem;
-  border-radius: 4px;
-  border: 1px solid #2196f3;
-}
-
-.summary-item.info .value {
-  color: #1976d2;
-  font-weight: 600;
-}
-
-.buffer-note {
-  display: block;
-  margin-top: 0.25rem;
-  font-size: 0.75rem;
-  color: #6c757d;
-  font-style: italic;
-}
-
-.value.positive {
-  color: #28a745;
-}
-
-.schedule-section {
-  margin-bottom: 1.5rem;
-}
-
-.schedule-section h4 {
-  margin: 0 0 1rem 0;
-  color: #2c3e50;
-}
-
-.schedule-controls {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  margin-bottom: 1rem;
-  flex-wrap: wrap;
-}
-
-.control-label {
-  font-size: 0.95rem;
-  font-weight: 500;
-  color: #495057;
-}
-
-.week-selector {
-  display: flex;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-}
-
-.week-option {
-  padding: 0.5rem 1rem;
-  border: 2px solid #dee2e6;
-  background: white;
-  color: #495057;
-  border-radius: 6px;
-  font-size: 0.9rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  min-width: 60px;
-}
-
-.week-option:hover {
-  border-color: #42b983;
-  color: #42b983;
-  transform: translateY(-1px);
-  box-shadow: 0 2px 4px rgba(66, 185, 131, 0.2);
-}
-
-.week-option.active {
-  background: #42b983;
-  border-color: #42b983;
-  color: white;
-  box-shadow: 0 2px 6px rgba(66, 185, 131, 0.3);
-}
-
-.week-option.active:hover {
-  background: #38a372;
-  border-color: #38a372;
-}
-
-.table-container {
-  overflow-x: auto;
-}
-
-.schedule-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.9rem;
-}
-
-.schedule-table th {
-  background: #f8f9fa;
-  padding: 0.75rem;
-  text-align: left;
-  font-weight: 600;
-  color: #495057;
-  border-bottom: 2px solid #dee2e6;
-}
-
-.schedule-table td {
-  padding: 0.75rem;
-  border-bottom: 1px solid #dee2e6;
-}
-
-.schedule-table tr.main-row {
-  transition: background-color 0.15s ease;
-}
-
-.schedule-table tr.main-row.has-expenses {
-  cursor: pointer;
-}
-
-.schedule-table tr.main-row:hover {
-  background: #f8f9fa;
-}
-
-.schedule-table tr.equilibrium-reached {
-  background: #d4edda;
-}
-
-.schedule-table tr.equilibrium-reached:hover {
-  background: #c3e6cb;
-}
-
-.col-expand {
-  width: 50px;
-  text-align: center;
-  padding-left: 1rem !important;
-}
-
-.expand-icon {
-  font-size: 0.75rem;
-  color: #6b7280;
-  font-weight: bold;
-}
-
-.col-items {
-  text-align: center;
-  font-weight: 600;
-}
-
-.detail-row {
-  background-color: #f8f9fa;
-  border-bottom: 1px solid #dee2e6;
-}
-
-.expense-details {
-  padding: 1rem 2rem;
-}
-
-.expense-details h4 {
-  margin: 0 0 0.75rem 0;
-  font-size: 0.95rem;
-  color: #495057;
-}
-
-.expense-details ul {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-}
-
-.expense-details li {
-  display: flex;
-  justify-content: space-between;
-  padding: 0.5rem 0;
-  border-bottom: 1px solid #e9ecef;
-}
-
-.expense-details li:last-child {
-  border-bottom: none;
-}
-
-.expense-name {
-  flex: 1;
-  font-weight: 500;
-  color: #212529;
-}
-
-.expense-amount {
-  margin-left: 1rem;
-  font-weight: 600;
-  color: #495057;
-}
-
-.expense-frequency {
-  margin-left: 0.5rem;
-  color: #6c757d;
-  font-size: 0.875rem;
-  font-style: italic;
-}
-
-/* Sub-Account Distribution Styles */
-.subaccount-distribution {
-  padding: 1.5rem 2rem;
-}
-
-.subaccount-distribution h4 {
-  margin: 0 0 1rem 0;
-  font-size: 1rem;
-  color: #374151;
-  font-weight: 600;
-}
-
-.distribution-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-  gap: 1rem;
-  margin-bottom: 1rem;
-}
-
-.distribution-card {
-  background: white;
-  border: 2px solid #e5e7eb;
-  border-radius: 8px;
-  padding: 1rem;
-  transition: all 0.2s;
-}
-
-.distribution-card:hover {
-  border-color: #2dd4bf;
-  box-shadow: 0 2px 8px rgba(45, 212, 191, 0.15);
-}
-
-.dist-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding-bottom: 0.75rem;
-  margin-bottom: 0.75rem;
-  border-bottom: 1px solid #e5e7eb;
-}
-
-.dist-name {
-  font-weight: 600;
-  color: #1f2937;
-  font-size: 0.9rem;
-}
-
-.dist-amount {
-  font-size: 1.1rem;
-  font-weight: 700;
-  color: #059669;
-  font-family: 'SF Mono', 'Monaco', 'Cascadia Code', monospace;
-}
-
-.dist-details {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.dist-stat {
-  display: flex;
-  justify-content: space-between;
-  font-size: 0.875rem;
-}
-
-.dist-stat span:first-child {
-  color: #6b7280;
-}
-
-.dist-stat span:last-child {
-  font-weight: 600;
-  color: #374151;
-  font-family: 'SF Mono', 'Monaco', 'Cascadia Code', monospace;
-}
-
-.distribution-total {
-  display: flex;
-  justify-content: space-between;
-  padding: 1rem;
-  background: #f0fdf4;
-  border-radius: 8px;
-  border: 1px solid #86efac;
-  font-weight: 600;
-  margin-top: 1rem;
-}
-
-.total-amount {
-  font-size: 1.2rem;
-  color: #059669;
-  font-family: 'SF Mono', 'Monaco', 'Cascadia Code', monospace;
-}
-
-.no-details {
-  padding: 2rem;
-  text-align: center;
-  color: #9ca3af;
-  font-size: 0.875rem;
-  font-style: italic;
-}
-
-.text-success {
-  color: #10b981 !important;
-}
-
-.text-warning {
-  color: #f59e0b !important;
-}
-
-.text-danger {
-  color: #ef4444 !important;
-}
-
-.transfer-amount {
-  font-weight: 600;
-  color: #2c3e50;
-}
-
-.catch-up-badge {
-  display: inline-block;
-  padding: 0.25rem 0.5rem;
-  background: #fff3cd;
-  color: #856404;
-  border-radius: 4px;
-  font-weight: 600;
-  font-size: 0.85rem;
-}
-
-.equilibrium-badge {
-  color: #6c757d;
-}
-
-.status-badge {
-  display: inline-block;
-  padding: 0.25rem 0.5rem;
-  border-radius: 4px;
-  font-weight: 500;
-  font-size: 0.85rem;
-}
-
-.status-badge.success {
-  background: #d4edda;
-  color: #155724;
-}
-
-.status-badge.warning {
-  background: #fff3cd;
-  color: #856404;
-}
-
-.info-box {
-  background: #e7f3ff;
-  border-left: 4px solid #2196f3;
-  padding: 1rem;
-  border-radius: 4px;
-  font-size: 0.9rem;
-}
-
-.info-box p {
-  margin: 0 0 0.5rem 0;
-}
-
-.info-box ul {
-  margin: 0;
-  padding-left: 1.5rem;
-}
-
-.info-box li {
-  margin-bottom: 0.25rem;
-}
-
-.empty-state {
-  text-align: center;
-  padding: 3rem 1rem;
-  color: #6c757d;
-}
-
-.empty-state p {
-  margin: 0;
-  font-size: 1rem;
-}
-</style>

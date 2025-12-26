@@ -3,11 +3,21 @@ const cors = require('cors');
 const bodyParser = require('body-parser');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const cron = require('node-cron');
 const db = require('./database');
 
 const app = express();
 const PORT = process.env.PORT || 3200;
 const JWT_SECRET = process.env.JWT_SECRET || 'budget-calculator-secret-key';
+
+// Helper: Format date as YYYY-MM-DD in local time (not UTC)
+// This avoids timezone bugs where toISOString() shifts dates
+function formatDateLocal(date) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+}
 
 // Middleware
 app.use(cors());
@@ -17,10 +27,10 @@ app.use(bodyParser.json());
 app.get('/health', (req, res) => {
     res.status(200).json({
         status: 'ok',
-        version: '1.1.0',
+        version: '2.0.0',
         timestamp: new Date().toISOString(),
         uptime: process.uptime(),
-        message: 'Password change & automation features deployed! 🚀'
+        message: 'NZ Budget Calculator API'
     });
 });
 
@@ -226,6 +236,10 @@ app.post('/api/budget/save', authenticateToken, (req, res) => {
                     .run(userId, budgetId);
             }
 
+            // Sync to normalized tables
+            const accountMap = syncAccountsToTable(userId, budgetId, accounts);
+            syncExpensesToTable(userId, budgetId, expenses, accountMap);
+
             res.json({ message: 'Budget updated successfully', budgetId });
         } else {
             // Create new budget
@@ -254,9 +268,14 @@ app.post('/api/budget/save', authenticateToken, (req, res) => {
                     .run(userId, result.lastInsertRowid);
             }
 
+            // Sync to normalized tables
+            const newBudgetId = result.lastInsertRowid;
+            const accountMap = syncAccountsToTable(userId, newBudgetId, accounts);
+            syncExpensesToTable(userId, newBudgetId, expenses, accountMap);
+
             res.json({
                 message: 'Budget saved successfully',
-                budgetId: result.lastInsertRowid
+                budgetId: newBudgetId
             });
         }
     } catch (error) {
@@ -416,344 +435,6 @@ app.get('/api/verify', authenticateToken, (req, res) => {
 });
 
 // ============================================
-// ACCOUNT MANAGEMENT ENDPOINTS
-// ============================================
-
-// Create new account
-app.post('/api/accounts', authenticateToken, (req, res) => {
-    try {
-        const { name, account_type, current_balance, target_balance, is_expense_account, starting_balance, starting_balance_date, parent_account_id, auto_allocate } = req.body;
-        const userId = req.user.userId;
-
-        if (!name) {
-            return res.status(400).json({ error: 'Account name is required' });
-        }
-
-        // If parent_account_id is provided, validate it
-        if (parent_account_id) {
-            const parentAccount = db.prepare('SELECT * FROM accounts WHERE id = ? AND user_id = ?')
-                .get(parent_account_id, userId);
-
-            if (!parentAccount) {
-                return res.status(404).json({ error: 'Parent account not found' });
-            }
-
-            // Only expense accounts can have sub-accounts
-            if (!parentAccount.is_expense_account) {
-                return res.status(400).json({ error: 'Sub-accounts can only be created under expense accounts' });
-            }
-
-            // Sub-accounts automatically inherit expense account status
-            // They cannot be expense accounts themselves at the top level
-        }
-
-        // If this is being set as expense account (and has no parent), unset any existing expense account
-        if (is_expense_account && !parent_account_id) {
-            db.prepare('UPDATE accounts SET is_expense_account = 0 WHERE user_id = ? AND is_expense_account = 1 AND parent_account_id IS NULL')
-                .run(userId);
-        }
-
-        const result = db.prepare(`
-            INSERT INTO accounts (user_id, name, account_type, current_balance, target_balance, is_expense_account, starting_balance, starting_balance_date, parent_account_id, auto_allocate)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-            userId,
-            name,
-            account_type || 'checking',
-            current_balance || 0,
-            target_balance || null,
-            (is_expense_account && !parent_account_id) ? 1 : 0,
-            starting_balance !== undefined ? starting_balance : null,
-            starting_balance_date || null,
-            parent_account_id || null,
-            auto_allocate !== undefined ? (auto_allocate ? 1 : 0) : 1
-        );
-
-        const account = db.prepare('SELECT * FROM accounts WHERE id = ?').get(result.lastInsertRowid);
-
-        res.status(201).json({
-            message: 'Account created successfully',
-            account
-        });
-    } catch (error) {
-        console.error('Create account error:', error);
-        res.status(500).json({ error: 'Server error creating account' });
-    }
-});
-
-// Get all accounts for user
-app.get('/api/accounts', authenticateToken, (req, res) => {
-    try {
-        const userId = req.user.userId;
-
-        const accounts = db.prepare(`
-            SELECT * FROM accounts
-            WHERE user_id = ?
-            ORDER BY is_expense_account DESC, parent_account_id NULLS FIRST, created_at ASC
-        `).all(userId);
-
-        // Build hierarchical structure
-        const accountMap = new Map();
-        const rootAccounts = [];
-
-        // First pass: create map of all accounts
-        accounts.forEach(account => {
-            accountMap.set(account.id, { ...account, sub_accounts: [] });
-        });
-
-        // Second pass: build hierarchy
-        accounts.forEach(account => {
-            const accountWithSubs = accountMap.get(account.id);
-            if (account.parent_account_id) {
-                const parent = accountMap.get(account.parent_account_id);
-                if (parent) {
-                    parent.sub_accounts.push(accountWithSubs);
-                }
-            } else {
-                rootAccounts.push(accountWithSubs);
-            }
-        });
-
-        res.json({ accounts: rootAccounts });
-    } catch (error) {
-        console.error('Get accounts error:', error);
-        res.status(500).json({ error: 'Server error fetching accounts' });
-    }
-});
-
-// Get single account
-app.get('/api/accounts/:id', authenticateToken, (req, res) => {
-    try {
-        const userId = req.user.userId;
-        const accountId = req.params.id;
-
-        const account = db.prepare('SELECT * FROM accounts WHERE id = ? AND user_id = ?')
-            .get(accountId, userId);
-
-        if (!account) {
-            return res.status(404).json({ error: 'Account not found' });
-        }
-
-        // Get sub-accounts if any
-        const subAccounts = db.prepare('SELECT * FROM accounts WHERE parent_account_id = ? AND user_id = ?')
-            .all(accountId, userId);
-
-        res.json({
-            account: {
-                ...account,
-                sub_accounts: subAccounts
-            }
-        });
-    } catch (error) {
-        console.error('Get account error:', error);
-        res.status(500).json({ error: 'Server error fetching account' });
-    }
-});
-
-// Update account
-app.put('/api/accounts/:id', authenticateToken, (req, res) => {
-    try {
-        const userId = req.user.userId;
-        const accountId = req.params.id;
-        const { name, account_type, current_balance, target_balance, is_expense_account, starting_balance, starting_balance_date, parent_account_id, auto_allocate } = req.body;
-
-        // Verify account belongs to user
-        const account = db.prepare('SELECT * FROM accounts WHERE id = ? AND user_id = ?')
-            .get(accountId, userId);
-
-        if (!account) {
-            return res.status(404).json({ error: 'Account not found' });
-        }
-
-        // If parent_account_id is being changed, validate it
-        if (parent_account_id !== undefined && parent_account_id !== account.parent_account_id) {
-            if (parent_account_id !== null) {
-                const parentAccount = db.prepare('SELECT * FROM accounts WHERE id = ? AND user_id = ?')
-                    .get(parent_account_id, userId);
-
-                if (!parentAccount) {
-                    return res.status(404).json({ error: 'Parent account not found' });
-                }
-
-                if (!parentAccount.is_expense_account) {
-                    return res.status(400).json({ error: 'Sub-accounts can only be created under expense accounts' });
-                }
-
-                // Prevent circular references
-                if (parent_account_id === accountId) {
-                    return res.status(400).json({ error: 'Account cannot be its own parent' });
-                }
-            }
-        }
-
-        // If setting as expense account (and not a sub-account), unset others
-        if (is_expense_account && (!parent_account_id && parent_account_id !== account.parent_account_id)) {
-            db.prepare('UPDATE accounts SET is_expense_account = 0 WHERE user_id = ? AND id != ? AND is_expense_account = 1 AND parent_account_id IS NULL')
-                .run(userId, accountId);
-        }
-
-        db.prepare(`
-            UPDATE accounts
-            SET name = COALESCE(?, name),
-                account_type = COALESCE(?, account_type),
-                current_balance = COALESCE(?, current_balance),
-                target_balance = ?,
-                is_expense_account = COALESCE(?, is_expense_account),
-                starting_balance = ?,
-                starting_balance_date = ?,
-                parent_account_id = ?,
-                auto_allocate = COALESCE(?, auto_allocate),
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = ? AND user_id = ?
-        `).run(
-            name || null,
-            account_type || null,
-            current_balance !== undefined ? current_balance : null,
-            target_balance !== undefined ? target_balance : account.target_balance,
-            is_expense_account !== undefined ? (is_expense_account ? 1 : 0) : null,
-            starting_balance !== undefined ? starting_balance : account.starting_balance,
-            starting_balance_date !== undefined ? starting_balance_date : account.starting_balance_date,
-            parent_account_id !== undefined ? parent_account_id : account.parent_account_id,
-            auto_allocate !== undefined ? (auto_allocate ? 1 : 0) : null,
-            accountId,
-            userId
-        );
-
-        const updatedAccount = db.prepare('SELECT * FROM accounts WHERE id = ?').get(accountId);
-
-        res.json({
-            message: 'Account updated successfully',
-            account: updatedAccount
-        });
-    } catch (error) {
-        console.error('Update account error:', error);
-        res.status(500).json({ error: 'Server error updating account' });
-    }
-});
-
-// Delete account
-app.delete('/api/accounts/:id', authenticateToken, (req, res) => {
-    try {
-        const userId = req.user.userId;
-        const accountId = req.params.id;
-
-        // Verify account belongs to user
-        const account = db.prepare('SELECT * FROM accounts WHERE id = ? AND user_id = ?')
-            .get(accountId, userId);
-
-        if (!account) {
-            return res.status(404).json({ error: 'Account not found' });
-        }
-
-        // Check if account has sub-accounts
-        const subAccountCount = db.prepare('SELECT COUNT(*) as count FROM accounts WHERE parent_account_id = ?')
-            .get(accountId).count;
-
-        if (subAccountCount > 0) {
-            return res.status(400).json({
-                error: 'Cannot delete account with sub-accounts. Delete sub-accounts first.',
-                details: { subAccountCount }
-            });
-        }
-
-        // Check if account has active transactions or transfers
-        const transactionCount = db.prepare('SELECT COUNT(*) as count FROM transactions WHERE account_id = ?')
-            .get(accountId).count;
-
-        const transferCount = db.prepare(`
-            SELECT COUNT(*) as count FROM transfers
-            WHERE (from_account_id = ? OR to_account_id = ?) AND status != 'cancelled'
-        `).get(accountId, accountId).count;
-
-        if (transactionCount > 0 || transferCount > 0) {
-            return res.status(400).json({
-                error: 'Cannot delete account with existing transactions or transfers',
-                details: { transactionCount, transferCount }
-            });
-        }
-
-        db.prepare('DELETE FROM accounts WHERE id = ? AND user_id = ?').run(accountId, userId);
-
-        res.json({ message: 'Account deleted successfully' });
-    } catch (error) {
-        console.error('Delete account error:', error);
-        res.status(500).json({ error: 'Server error deleting account' });
-    }
-});
-
-// Get account balance history (from transactions)
-app.get('/api/accounts/:id/balance-history', authenticateToken, (req, res) => {
-    try {
-        const userId = req.user.userId;
-        const accountId = req.params.id;
-        const { days = 30 } = req.query;
-
-        // Verify account belongs to user
-        const account = db.prepare('SELECT * FROM accounts WHERE id = ? AND user_id = ?')
-            .get(accountId, userId);
-
-        if (!account) {
-            return res.status(404).json({ error: 'Account not found' });
-        }
-
-        // Get transactions for the period
-        const transactions = db.prepare(`
-            SELECT
-                transaction_date,
-                amount,
-                transaction_type,
-                description
-            FROM transactions
-            WHERE account_id = ?
-                AND transaction_date >= date('now', '-' || ? || ' days')
-            ORDER BY transaction_date ASC, created_at ASC
-        `).all(accountId, days);
-
-        // Calculate running balance
-        let balance = account.current_balance;
-        const history = [];
-
-        // Work backwards from current balance
-        for (let i = transactions.length - 1; i >= 0; i--) {
-            const tx = transactions[i];
-            if (tx.transaction_type === 'income') {
-                balance -= tx.amount;
-            } else if (tx.transaction_type === 'expense') {
-                balance += tx.amount;
-            }
-        }
-
-        // Now build forward history
-        for (const tx of transactions) {
-            if (tx.transaction_type === 'income') {
-                balance += tx.amount;
-            } else if (tx.transaction_type === 'expense') {
-                balance -= tx.amount;
-            }
-            history.push({
-                date: tx.transaction_date,
-                balance: balance,
-                change: tx.amount,
-                type: tx.transaction_type,
-                description: tx.description
-            });
-        }
-
-        res.json({
-            account: {
-                id: account.id,
-                name: account.name,
-                current_balance: account.current_balance
-            },
-            history
-        });
-    } catch (error) {
-        console.error('Get balance history error:', error);
-        res.status(500).json({ error: 'Server error fetching balance history' });
-    }
-});
-
-// ============================================
 // RECURRING EXPENSES ENDPOINTS
 // ============================================
 
@@ -797,7 +478,180 @@ function calculateNextDueDate(frequency, due_day_of_week, due_day_of_month, due_
         }
     }
 
-    return nextDue.toISOString().split('T')[0]; // Return YYYY-MM-DD format
+    // Format as YYYY-MM-DD in local time (not UTC)
+    const year = nextDue.getFullYear();
+    const month = String(nextDue.getMonth() + 1).padStart(2, '0');
+    const day = String(nextDue.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+}
+
+// ============================================
+// SYNC HELPERS - Sync JSON budget data to normalized tables
+// ============================================
+
+// Sync accounts from JSON to accounts table
+function syncAccountsToTable(userId, budgetId, accountsJson) {
+    if (!accountsJson || !Array.isArray(accountsJson)) return new Map();
+
+    // Get existing accounts for this budget
+    const existingAccounts = db.prepare(`
+        SELECT id, frontend_id FROM accounts
+        WHERE user_id = ? AND budget_id = ?
+    `).all(userId, budgetId);
+
+    const existingMap = new Map(existingAccounts.map(a => [a.frontend_id, a.id]));
+    const currentFrontendIds = new Set();
+    const frontendToDbIdMap = new Map();
+
+    for (const account of accountsJson) {
+        if (!account.id) continue;
+        currentFrontendIds.add(account.id);
+
+        if (existingMap.has(account.id)) {
+            // Update existing account
+            const dbId = existingMap.get(account.id);
+            db.prepare(`
+                UPDATE accounts SET
+                    name = ?,
+                    current_balance = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            `).run(
+                account.name || 'Unnamed Account',
+                account.balance || 0,
+                dbId
+            );
+            frontendToDbIdMap.set(account.id, dbId);
+        } else {
+            // Insert new account
+            const result = db.prepare(`
+                INSERT INTO accounts (user_id, budget_id, frontend_id, name, current_balance, is_expense_account)
+                VALUES (?, ?, ?, ?, ?, 1)
+            `).run(
+                userId,
+                budgetId,
+                account.id,
+                account.name || 'Unnamed Account',
+                account.balance || 0
+            );
+            frontendToDbIdMap.set(account.id, result.lastInsertRowid);
+        }
+    }
+
+    // Delete accounts no longer in JSON
+    for (const [frontendId, dbId] of existingMap) {
+        if (!currentFrontendIds.has(frontendId)) {
+            db.prepare('DELETE FROM accounts WHERE id = ?').run(dbId);
+        }
+    }
+
+    return frontendToDbIdMap;
+}
+
+// Sync expenses from JSON to recurring_expenses table
+function syncExpensesToTable(userId, budgetId, expensesJson, accountFrontendToDbMap) {
+    if (!expensesJson || !Array.isArray(expensesJson)) return;
+
+    // Get existing expenses for this budget
+    const existingExpenses = db.prepare(`
+        SELECT id, frontend_id FROM recurring_expenses
+        WHERE user_id = ? AND budget_id = ?
+    `).all(userId, budgetId);
+
+    const existingMap = new Map(existingExpenses.map(e => [e.frontend_id, e.id]));
+    const currentFrontendIds = new Set();
+
+    for (const expense of expensesJson) {
+        if (!expense.id) continue;
+        currentFrontendIds.add(expense.id);
+
+        // Map account frontend ID to database ID
+        const dbAccountId = expense.accountId ? (accountFrontendToDbMap.get(expense.accountId) || null) : null;
+
+        // Normalize frequency (frontend uses 'annual', backend expects it for calculateNextDueDate)
+        let frequency = expense.period || expense.frequency || 'weekly';
+        if (frequency === 'annually') frequency = 'annual';
+
+        // Map dueDay based on frequency
+        let due_day_of_week = null;
+        let due_day_of_month = null;
+        let due_date = null;
+
+        if (frequency === 'weekly' || frequency === 'fortnightly') {
+            due_day_of_week = expense.dueDay;
+            if (frequency === 'fortnightly' && expense.dueDate) {
+                due_date = expense.dueDate;
+            }
+        } else if (frequency === 'monthly') {
+            due_day_of_month = expense.dueDay;
+        } else if (frequency === 'annual') {
+            due_date = expense.dueDate;
+        } else if (frequency === 'one-off') {
+            due_date = expense.date || expense.dueDate;
+        }
+
+        // Calculate next due date
+        const next_due_date = calculateNextDueDate(frequency, due_day_of_week, due_day_of_month, due_date);
+
+        if (existingMap.has(expense.id)) {
+            // Update existing expense
+            db.prepare(`
+                UPDATE recurring_expenses SET
+                    description = ?,
+                    amount = ?,
+                    frequency = ?,
+                    due_day_of_week = ?,
+                    due_day_of_month = ?,
+                    due_date = ?,
+                    next_due_date = ?,
+                    account_id = ?,
+                    payment_mode = ?,
+                    is_active = 1,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            `).run(
+                expense.description || expense.name || 'Unnamed Expense',
+                expense.amount || 0,
+                frequency,
+                due_day_of_week,
+                due_day_of_month,
+                due_date,
+                next_due_date,
+                dbAccountId,
+                expense.paymentMode || 'automatic',
+                existingMap.get(expense.id)
+            );
+        } else {
+            // Insert new expense
+            db.prepare(`
+                INSERT INTO recurring_expenses (
+                    user_id, budget_id, frontend_id, description, amount, frequency,
+                    due_day_of_week, due_day_of_month, due_date, next_due_date,
+                    account_id, payment_mode, is_active
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            `).run(
+                userId,
+                budgetId,
+                expense.id,
+                expense.description || expense.name || 'Unnamed Expense',
+                expense.amount || 0,
+                frequency,
+                due_day_of_week,
+                due_day_of_month,
+                due_date,
+                next_due_date,
+                dbAccountId,
+                expense.paymentMode || 'automatic'
+            );
+        }
+    }
+
+    // Mark removed expenses as inactive
+    for (const [frontendId, dbId] of existingMap) {
+        if (!currentFrontendIds.has(frontendId)) {
+            db.prepare('UPDATE recurring_expenses SET is_active = 0 WHERE id = ?').run(dbId);
+        }
+    }
 }
 
 // Create recurring expense
@@ -811,7 +665,8 @@ app.post('/api/recurring-expenses', authenticateToken, (req, res) => {
             due_day_of_week,
             due_day_of_month,
             due_date,
-            account_id
+            account_id,
+            payment_mode
         } = req.body;
         const userId = req.user.userId;
 
@@ -840,8 +695,8 @@ app.post('/api/recurring-expenses', authenticateToken, (req, res) => {
         const result = db.prepare(`
             INSERT INTO recurring_expenses (
                 user_id, budget_id, description, amount, frequency,
-                due_day_of_week, due_day_of_month, due_date, next_due_date, account_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                due_day_of_week, due_day_of_month, due_date, next_due_date, account_id, payment_mode
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
             userId,
             budget_id || null,
@@ -852,7 +707,8 @@ app.post('/api/recurring-expenses', authenticateToken, (req, res) => {
             due_day_of_month || null,
             due_date || null,
             next_due_date,
-            account_id || null
+            account_id || null,
+            payment_mode || 'automatic'
         );
 
         const expense = db.prepare('SELECT * FROM recurring_expenses WHERE id = ?').get(result.lastInsertRowid);
@@ -951,7 +807,8 @@ app.put('/api/recurring-expenses/:id', authenticateToken, (req, res) => {
             due_day_of_month,
             due_date,
             account_id,
-            is_active
+            is_active,
+            payment_mode
         } = req.body;
 
         // Verify expense belongs to user
@@ -990,6 +847,7 @@ app.put('/api/recurring-expenses/:id', authenticateToken, (req, res) => {
                 next_due_date = ?,
                 account_id = ?,
                 is_active = COALESCE(?, is_active),
+                payment_mode = COALESCE(?, payment_mode),
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ? AND user_id = ?
         `).run(
@@ -1002,6 +860,7 @@ app.put('/api/recurring-expenses/:id', authenticateToken, (req, res) => {
             next_due_date,
             account_id !== undefined ? account_id : expense.account_id,
             is_active !== undefined ? (is_active ? 1 : 0) : null,
+            payment_mode || null,
             expenseId,
             userId
         );
@@ -1082,9 +941,388 @@ app.post('/api/recurring-expenses/recalculate', authenticateToken, (req, res) =>
 // TRANSACTION ENDPOINTS
 // ============================================
 
+// Get all transactions with filters
+app.get('/api/transactions', authenticateToken, (req, res) => {
+    try {
+        const userId = req.user.userId;
+        const {
+            from_date,
+            to_date,
+            account_id,
+            transaction_type,
+            status,
+            recurring_expense_id,
+            limit = 100,
+            offset = 0
+        } = req.query;
+
+        let query = 'SELECT * FROM transactions WHERE user_id = ?';
+        const params = [userId];
+
+        if (from_date) {
+            query += ' AND transaction_date >= ?';
+            params.push(from_date);
+        }
+        if (to_date) {
+            query += ' AND transaction_date <= ?';
+            params.push(to_date);
+        }
+        if (account_id) {
+            query += ' AND account_id = ?';
+            params.push(account_id);
+        }
+        if (transaction_type) {
+            query += ' AND transaction_type = ?';
+            params.push(transaction_type);
+        }
+        if (status) {
+            query += ' AND status = ?';
+            params.push(status);
+        }
+        if (recurring_expense_id) {
+            query += ' AND recurring_expense_id = ?';
+            params.push(recurring_expense_id);
+        }
+
+        query += ' ORDER BY transaction_date DESC, created_at DESC LIMIT ? OFFSET ?';
+        params.push(parseInt(limit), parseInt(offset));
+
+        const transactions = db.prepare(query).all(...params);
+
+        // Get total count for pagination
+        let countQuery = 'SELECT COUNT(*) as total FROM transactions WHERE user_id = ?';
+        const countParams = [userId];
+        if (from_date) { countQuery += ' AND transaction_date >= ?'; countParams.push(from_date); }
+        if (to_date) { countQuery += ' AND transaction_date <= ?'; countParams.push(to_date); }
+        if (account_id) { countQuery += ' AND account_id = ?'; countParams.push(account_id); }
+        if (transaction_type) { countQuery += ' AND transaction_type = ?'; countParams.push(transaction_type); }
+        if (status) { countQuery += ' AND status = ?'; countParams.push(status); }
+        if (recurring_expense_id) { countQuery += ' AND recurring_expense_id = ?'; countParams.push(recurring_expense_id); }
+
+        const countResult = db.prepare(countQuery).get(...countParams);
+
+        res.json({
+            transactions,
+            total: countResult.total,
+            limit: parseInt(limit),
+            offset: parseInt(offset)
+        });
+    } catch (error) {
+        console.error('Get transactions error:', error);
+        res.status(500).json({ error: 'Server error fetching transactions' });
+    }
+});
+
+// Get transactions for a specific week
+app.get('/api/transactions/weekly/:date', authenticateToken, (req, res) => {
+    try {
+        const userId = req.user.userId;
+        const { date } = req.params;
+
+        // Calculate week start (Monday) and end (Sunday)
+        const targetDate = new Date(date);
+        const dayOfWeek = targetDate.getDay();
+        const diff = dayOfWeek === 0 ? -6 : 1 - dayOfWeek; // Adjust to Monday
+        const weekStart = new Date(targetDate);
+        weekStart.setDate(targetDate.getDate() + diff);
+        const weekEnd = new Date(weekStart);
+        weekEnd.setDate(weekStart.getDate() + 6);
+
+        const startStr = formatDateLocal(weekStart);
+        const endStr = formatDateLocal(weekEnd);
+
+        const transactions = db.prepare(`
+            SELECT t.*, a.name as account_name
+            FROM transactions t
+            LEFT JOIN accounts a ON t.account_id = a.id
+            WHERE t.user_id = ?
+                AND t.transaction_date >= ?
+                AND t.transaction_date <= ?
+            ORDER BY t.transaction_date ASC, t.created_at ASC
+        `).all(userId, startStr, endStr);
+
+        res.json({
+            transactions,
+            week_start: startStr,
+            week_end: endStr
+        });
+    } catch (error) {
+        console.error('Get weekly transactions error:', error);
+        res.status(500).json({ error: 'Server error fetching weekly transactions' });
+    }
+});
+
+// Helper: Generate all occurrences of a recurring expense within a date range
+function generateExpenseOccurrences(expense, startDate, endDate) {
+    const occurrences = [];
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+
+    // Start from next_due_date or calculate first occurrence
+    let currentDate = new Date(expense.next_due_date);
+
+    // If next_due_date is before start, calculate the first occurrence on/after start
+    if (currentDate < start) {
+        currentDate = new Date(start);
+
+        if (expense.frequency === 'weekly' || expense.frequency === 'fortnightly') {
+            // Find the next occurrence of the target day of week
+            const targetDay = expense.due_day_of_week;
+            if (targetDay !== null && targetDay !== undefined) {
+                const currentDay = currentDate.getDay();
+                let daysToAdd = targetDay - currentDay;
+                if (daysToAdd < 0) daysToAdd += 7;
+                currentDate.setDate(currentDate.getDate() + daysToAdd);
+            }
+        } else if (expense.frequency === 'monthly') {
+            // Find the next occurrence of the target day of month
+            const targetDayOfMonth = expense.due_day_of_month;
+            if (targetDayOfMonth) {
+                currentDate.setDate(targetDayOfMonth);
+                if (currentDate < start) {
+                    currentDate.setMonth(currentDate.getMonth() + 1);
+                    currentDate.setDate(targetDayOfMonth);
+                }
+            }
+        } else if (expense.frequency === 'annual') {
+            // Use the specific due_date
+            if (expense.due_date) {
+                const annualDate = new Date(expense.due_date);
+                currentDate = new Date(start.getFullYear(), annualDate.getMonth(), annualDate.getDate());
+                if (currentDate < start) {
+                    currentDate.setFullYear(currentDate.getFullYear() + 1);
+                }
+            }
+        }
+    }
+
+    // Generate occurrences within the range
+    while (currentDate <= end) {
+        if (currentDate >= start) {
+            occurrences.push({
+                id: expense.id,
+                item_type: 'expense',
+                name: expense.name,
+                amount: expense.amount,
+                due_date: formatDateLocal(currentDate),
+                payment_mode: expense.payment_mode,
+                frequency: expense.frequency,
+                account_name: expense.account_name,
+                account_id: expense.account_id
+            });
+        }
+
+        // Move to next occurrence based on frequency
+        if (expense.frequency === 'weekly') {
+            currentDate.setDate(currentDate.getDate() + 7);
+        } else if (expense.frequency === 'fortnightly') {
+            currentDate.setDate(currentDate.getDate() + 14);
+        } else if (expense.frequency === 'monthly') {
+            currentDate.setMonth(currentDate.getMonth() + 1);
+            // Handle month-end edge cases
+            if (expense.due_day_of_month) {
+                const targetDay = expense.due_day_of_month;
+                const lastDayOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0).getDate();
+                currentDate.setDate(Math.min(targetDay, lastDayOfMonth));
+            }
+        } else if (expense.frequency === 'annual') {
+            currentDate.setFullYear(currentDate.getFullYear() + 1);
+        } else if (expense.frequency === 'one-off') {
+            break; // Only one occurrence for one-off expenses
+        } else {
+            break; // Unknown frequency, stop
+        }
+    }
+
+    return occurrences;
+}
+
+// Get upcoming scheduled items (transfers + automatic expenses)
+app.get('/api/transactions/upcoming', authenticateToken, (req, res) => {
+    try {
+        const userId = req.user.userId;
+        const { days = 30 } = req.query;
+
+        const endDate = new Date();
+        endDate.setDate(endDate.getDate() + parseInt(days));
+        const endDateStr = formatDateLocal(endDate);
+        const todayStr = formatDateLocal(new Date());
+        const today = new Date();
+
+        // Get scheduled transfers
+        const transfers = db.prepare(`
+            SELECT
+                t.id,
+                'transfer' as item_type,
+                t.amount,
+                t.scheduled_date as due_date,
+                t.status,
+                t.notes,
+                fa.name as from_account_name,
+                ta.name as to_account_name,
+                t.from_account_id,
+                t.to_account_id
+            FROM transfers t
+            LEFT JOIN accounts fa ON t.from_account_id = fa.id
+            LEFT JOIN accounts ta ON t.to_account_id = ta.id
+            WHERE t.user_id = ?
+                AND t.scheduled_date >= ?
+                AND t.scheduled_date <= ?
+                AND t.status IN ('scheduled', 'pending')
+            ORDER BY t.scheduled_date ASC
+        `).all(userId, todayStr, endDateStr);
+
+        // Get all active automatic expenses (we'll generate occurrences for them)
+        const expenseRecords = db.prepare(`
+            SELECT
+                re.id,
+                re.description as name,
+                re.amount,
+                re.next_due_date,
+                re.payment_mode,
+                re.frequency,
+                re.due_day_of_week,
+                re.due_day_of_month,
+                re.due_date,
+                a.name as account_name,
+                re.account_id
+            FROM recurring_expenses re
+            LEFT JOIN accounts a ON re.account_id = a.id
+            WHERE re.user_id = ?
+                AND re.is_active = 1
+                AND re.payment_mode = 'automatic'
+            ORDER BY re.next_due_date ASC
+        `).all(userId);
+
+        // Generate all expense occurrences within the date range
+        const expenses = [];
+        for (const expense of expenseRecords) {
+            const occurrences = generateExpenseOccurrences(expense, today, endDate);
+            expenses.push(...occurrences);
+        }
+
+        // Combine and sort by date
+        const upcoming = [...transfers, ...expenses].sort((a, b) =>
+            new Date(a.due_date) - new Date(b.due_date)
+        );
+
+        res.json({
+            upcoming,
+            transfers_count: transfers.length,
+            expenses_count: expenses.length,
+            days: parseInt(days)
+        });
+    } catch (error) {
+        console.error('Get upcoming items error:', error);
+        res.status(500).json({ error: 'Server error fetching upcoming items' });
+    }
+});
+
+// Get budget vs actual summary for manual expenses
+app.get('/api/transactions/budget-summary', authenticateToken, (req, res) => {
+    try {
+        const userId = req.user.userId;
+        const {
+            expense_id,
+            from_date,
+            to_date,
+            weeks = 4
+        } = req.query;
+
+        // Default date range: last N weeks
+        let startDate, endDate;
+        if (from_date && to_date) {
+            startDate = from_date;
+            endDate = to_date;
+        } else {
+            endDate = formatDateLocal(new Date());
+            const start = new Date();
+            start.setDate(start.getDate() - (parseInt(weeks) * 7));
+            startDate = formatDateLocal(start);
+        }
+
+        // Get manual expenses (either specific or all)
+        let expenseQuery = `
+            SELECT id, description, amount, frequency, payment_mode
+            FROM recurring_expenses
+            WHERE user_id = ? AND payment_mode = 'manual' AND is_active = 1
+        `;
+        const expenseParams = [userId];
+        if (expense_id) {
+            expenseQuery += ' AND id = ?';
+            expenseParams.push(expense_id);
+        }
+        const manualExpenses = db.prepare(expenseQuery).all(...expenseParams);
+
+        // Calculate weekly budget for each expense
+        const frequencyMultipliers = {
+            'weekly': 1,
+            'fortnightly': 0.5,
+            'monthly': 12/52,
+            'annual': 1/52
+        };
+
+        const summaries = [];
+
+        for (const expense of manualExpenses) {
+            const weeklyBudget = expense.amount * (frequencyMultipliers[expense.frequency] || 1);
+
+            // Get actual transactions for this expense
+            const transactions = db.prepare(`
+                SELECT
+                    SUM(amount) as total_actual,
+                    COUNT(*) as transaction_count,
+                    MIN(transaction_date) as first_date,
+                    MAX(transaction_date) as last_date
+                FROM transactions
+                WHERE user_id = ?
+                    AND recurring_expense_id = ?
+                    AND transaction_date >= ?
+                    AND transaction_date <= ?
+            `).get(userId, expense.id, startDate, endDate);
+
+            // Calculate number of weeks in range
+            const daysDiff = Math.ceil((new Date(endDate) - new Date(startDate)) / (1000 * 60 * 60 * 24));
+            const weeksInRange = Math.max(1, daysDiff / 7);
+
+            const totalBudget = weeklyBudget * weeksInRange;
+            const totalActual = transactions.total_actual || 0;
+            const variance = totalActual - totalBudget;
+            const weeklyAverage = totalActual / weeksInRange;
+
+            summaries.push({
+                expense_id: expense.id,
+                expense_name: expense.description,
+                frequency: expense.frequency,
+                weekly_budget: Math.round(weeklyBudget * 100) / 100,
+                total_budget: Math.round(totalBudget * 100) / 100,
+                total_actual: Math.round(totalActual * 100) / 100,
+                variance: Math.round(variance * 100) / 100,
+                variance_percent: totalBudget > 0 ? Math.round((variance / totalBudget) * 100) : 0,
+                weekly_average: Math.round(weeklyAverage * 100) / 100,
+                transaction_count: transactions.transaction_count || 0,
+                weeks_in_range: Math.round(weeksInRange * 10) / 10,
+                on_track: variance <= 0
+            });
+        }
+
+        res.json({
+            summaries,
+            date_range: { from: startDate, to: endDate },
+            total_budget: summaries.reduce((sum, s) => sum + s.total_budget, 0),
+            total_actual: summaries.reduce((sum, s) => sum + s.total_actual, 0),
+            total_variance: summaries.reduce((sum, s) => sum + s.variance, 0)
+        });
+    } catch (error) {
+        console.error('Get budget summary error:', error);
+        res.status(500).json({ error: 'Server error fetching budget summary' });
+    }
+});
+
 // Create transaction
 app.post('/api/transactions', authenticateToken, (req, res) => {
     try {
+        const userId = req.user.userId;
         const {
             account_id,
             transaction_type,
@@ -1092,32 +1330,29 @@ app.post('/api/transactions', authenticateToken, (req, res) => {
             description,
             amount,
             transaction_date,
-            recurring_expense_id
+            recurring_expense_id,
+            budget_amount,
+            notes,
+            status = 'completed'
         } = req.body;
-        const userId = req.user.userId;
 
         if (!transaction_type || !amount || !transaction_date) {
-            return res.status(400).json({ error: 'Transaction type, amount, and date are required' });
+            return res.status(400).json({ error: 'transaction_type, amount, and transaction_date are required' });
         }
 
-        if (!['income', 'expense', 'transfer'].includes(transaction_type)) {
-            return res.status(400).json({ error: 'Invalid transaction type' });
+        // Validate transaction type
+        const validTypes = ['income', 'expense', 'transfer'];
+        if (!validTypes.includes(transaction_type)) {
+            return res.status(400).json({ error: 'Invalid transaction_type. Must be: income, expense, or transfer' });
         }
 
-        // If account_id provided, verify it belongs to user
-        if (account_id) {
-            const account = db.prepare('SELECT id FROM accounts WHERE id = ? AND user_id = ?')
-                .get(account_id, userId);
-            if (!account) {
-                return res.status(404).json({ error: 'Account not found' });
-            }
-        }
-
+        // Create transaction
         const result = db.prepare(`
             INSERT INTO transactions (
                 user_id, account_id, transaction_type, category, description,
-                amount, transaction_date, recurring_expense_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                amount, transaction_date, is_recurring, recurring_expense_id,
+                status, budget_amount, notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
             userId,
             account_id || null,
@@ -1126,14 +1361,18 @@ app.post('/api/transactions', authenticateToken, (req, res) => {
             description || null,
             amount,
             transaction_date,
-            recurring_expense_id || null
+            recurring_expense_id ? 1 : 0,
+            recurring_expense_id || null,
+            status,
+            budget_amount || null,
+            notes || null
         );
 
-        // Update account balance if account_id provided
-        if (account_id) {
-            const change = transaction_type === 'income' ? amount : -amount;
+        // Update account balance if status is completed
+        if (status === 'completed' && account_id) {
+            const balanceChange = transaction_type === 'income' ? amount : -amount;
             db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?')
-                .run(change, account_id);
+                .run(balanceChange, account_id);
         }
 
         const transaction = db.prepare('SELECT * FROM transactions WHERE id = ?').get(result.lastInsertRowid);
@@ -1148,101 +1387,57 @@ app.post('/api/transactions', authenticateToken, (req, res) => {
     }
 });
 
-// Get all transactions for user
-app.get('/api/transactions', authenticateToken, (req, res) => {
+// Update transaction
+app.put('/api/transactions/:id', authenticateToken, (req, res) => {
     try {
         const userId = req.user.userId;
-        const { account_id, transaction_type, start_date, end_date, limit = 100 } = req.query;
+        const transactionId = req.params.id;
+        const { amount, description, category, notes, status } = req.body;
 
-        let query = 'SELECT * FROM transactions WHERE user_id = ?';
-        const params = [userId];
+        // Verify transaction belongs to user
+        const transaction = db.prepare('SELECT * FROM transactions WHERE id = ? AND user_id = ?')
+            .get(transactionId, userId);
 
-        if (account_id) {
-            query += ' AND account_id = ?';
-            params.push(account_id);
+        if (!transaction) {
+            return res.status(404).json({ error: 'Transaction not found' });
         }
 
-        if (transaction_type) {
-            query += ' AND transaction_type = ?';
-            params.push(transaction_type);
+        // If amount is changing and transaction is completed, adjust account balance
+        if (amount !== undefined && amount !== transaction.amount && transaction.account_id) {
+            const oldBalanceChange = transaction.transaction_type === 'income' ? transaction.amount : -transaction.amount;
+            const newBalanceChange = transaction.transaction_type === 'income' ? amount : -amount;
+            const adjustment = newBalanceChange - oldBalanceChange;
+            db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?')
+                .run(adjustment, transaction.account_id);
         }
 
-        if (start_date) {
-            query += ' AND transaction_date >= ?';
-            params.push(start_date);
-        }
+        db.prepare(`
+            UPDATE transactions
+            SET amount = COALESCE(?, amount),
+                description = COALESCE(?, description),
+                category = COALESCE(?, category),
+                notes = COALESCE(?, notes),
+                status = COALESCE(?, status)
+            WHERE id = ? AND user_id = ?
+        `).run(
+            amount !== undefined ? amount : null,
+            description !== undefined ? description : null,
+            category !== undefined ? category : null,
+            notes !== undefined ? notes : null,
+            status !== undefined ? status : null,
+            transactionId,
+            userId
+        );
 
-        if (end_date) {
-            query += ' AND transaction_date <= ?';
-            params.push(end_date);
-        }
-
-        query += ' ORDER BY transaction_date DESC, created_at DESC LIMIT ?';
-        params.push(parseInt(limit));
-
-        const transactions = db.prepare(query).all(...params);
-
-        res.json({ transactions, count: transactions.length });
-    } catch (error) {
-        console.error('Get transactions error:', error);
-        res.status(500).json({ error: 'Server error fetching transactions' });
-    }
-});
-
-// Get transactions for a specific week
-app.get('/api/transactions/weekly/:date', authenticateToken, (req, res) => {
-    try {
-        const userId = req.user.userId;
-        const { date } = req.params; // YYYY-MM-DD format
-
-        // Calculate week boundaries (Monday to Sunday)
-        const targetDate = new Date(date);
-        const dayOfWeek = targetDate.getDay();
-        const daysToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
-
-        const weekStart = new Date(targetDate);
-        weekStart.setDate(targetDate.getDate() + daysToMonday);
-
-        const weekEnd = new Date(weekStart);
-        weekEnd.setDate(weekStart.getDate() + 6);
-
-        const start_date = weekStart.toISOString().split('T')[0];
-        const end_date = weekEnd.toISOString().split('T')[0];
-
-        const transactions = db.prepare(`
-            SELECT t.*, a.name as account_name
-            FROM transactions t
-            LEFT JOIN accounts a ON t.account_id = a.id
-            WHERE t.user_id = ?
-                AND t.transaction_date >= ?
-                AND t.transaction_date <= ?
-            ORDER BY t.transaction_date ASC, t.created_at ASC
-        `).all(userId, start_date, end_date);
-
-        // Calculate totals
-        let totalIncome = 0;
-        let totalExpenses = 0;
-
-        transactions.forEach(tx => {
-            if (tx.transaction_type === 'income') {
-                totalIncome += tx.amount;
-            } else if (tx.transaction_type === 'expense') {
-                totalExpenses += tx.amount;
-            }
-        });
+        const updatedTransaction = db.prepare('SELECT * FROM transactions WHERE id = ?').get(transactionId);
 
         res.json({
-            week: { start: start_date, end: end_date },
-            transactions,
-            summary: {
-                totalIncome,
-                totalExpenses,
-                netCashFlow: totalIncome - totalExpenses
-            }
+            message: 'Transaction updated successfully',
+            transaction: updatedTransaction
         });
     } catch (error) {
-        console.error('Get weekly transactions error:', error);
-        res.status(500).json({ error: 'Server error fetching weekly transactions' });
+        console.error('Update transaction error:', error);
+        res.status(500).json({ error: 'Server error updating transaction' });
     }
 });
 
@@ -1252,6 +1447,7 @@ app.delete('/api/transactions/:id', authenticateToken, (req, res) => {
         const userId = req.user.userId;
         const transactionId = req.params.id;
 
+        // Verify transaction belongs to user
         const transaction = db.prepare('SELECT * FROM transactions WHERE id = ? AND user_id = ?')
             .get(transactionId, userId);
 
@@ -1259,620 +1455,442 @@ app.delete('/api/transactions/:id', authenticateToken, (req, res) => {
             return res.status(404).json({ error: 'Transaction not found' });
         }
 
-        // Reverse account balance change
-        if (transaction.account_id) {
-            const change = transaction.transaction_type === 'income' ? -transaction.amount : transaction.amount;
+        // Reverse the balance change if transaction was completed
+        if (transaction.status === 'completed' && transaction.account_id) {
+            const reversal = transaction.transaction_type === 'income' ? -transaction.amount : transaction.amount;
             db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?')
-                .run(change, transaction.account_id);
+                .run(reversal, transaction.account_id);
         }
 
         db.prepare('DELETE FROM transactions WHERE id = ? AND user_id = ?').run(transactionId, userId);
 
-        res.json({ message: 'Transaction deleted successfully' });
+        res.json({
+            message: 'Transaction deleted successfully',
+            balance_reversed: transaction.status === 'completed' && transaction.account_id ? true : false
+        });
     } catch (error) {
         console.error('Delete transaction error:', error);
         res.status(500).json({ error: 'Server error deleting transaction' });
     }
 });
 
-// Update transaction
-app.put('/api/transactions/:id', authenticateToken, (req, res) => {
-    try {
-        const userId = req.user.userId;
-        const transactionId = req.params.id;
-        const { amount, transaction_date, transaction_type, account_id, description, category } = req.body;
+// ============================================
+// INTERNAL PROCESSING FUNCTIONS (for scheduler and endpoints)
+// ============================================
 
-        // Get existing transaction
-        const existingTransaction = db.prepare('SELECT * FROM transactions WHERE id = ? AND user_id = ?')
-            .get(transactionId, userId);
+/**
+ * Process automatic expenses for a user
+ * @param {number} userId - The user ID
+ * @param {string} targetDate - YYYY-MM-DD date to process
+ * @param {boolean} exactDateOnly - If true, only process items due on exact date (for scheduler)
+ * @returns {object} { processed: [], errors: [], skipped: number }
+ */
+function processAutomaticExpensesForUser(userId, targetDate, exactDateOnly = false) {
+    const dateCondition = exactDateOnly ? '= ?' : '<= ?';
 
-        if (!existingTransaction) {
-            return res.status(404).json({ error: 'Transaction not found' });
-        }
+    // Get automatic expenses that are due
+    const dueExpenses = db.prepare(`
+        SELECT re.*, a.current_balance as account_balance
+        FROM recurring_expenses re
+        LEFT JOIN accounts a ON re.account_id = a.id
+        WHERE re.user_id = ?
+            AND re.is_active = 1
+            AND re.payment_mode = 'automatic'
+            AND re.next_due_date ${dateCondition}
+    `).all(userId, targetDate);
 
-        // Validate transaction_type if provided
-        if (transaction_type && !['income', 'expense', 'transfer'].includes(transaction_type)) {
-            return res.status(400).json({ error: 'Invalid transaction type' });
-        }
+    const processed = [];
+    const errors = [];
+    let skipped = 0;
 
-        // If account_id is provided, verify it belongs to the user
-        if (account_id) {
-            const account = db.prepare('SELECT id FROM accounts WHERE id = ? AND user_id = ?')
-                .get(account_id, userId);
-            if (!account) {
-                return res.status(400).json({ error: 'Invalid account' });
+    for (const expense of dueExpenses) {
+        try {
+            // Check if transaction already exists for this expense on this date
+            const existing = db.prepare(`
+                SELECT id FROM transactions
+                WHERE user_id = ?
+                    AND recurring_expense_id = ?
+                    AND transaction_date = ?
+            `).get(userId, expense.id, expense.next_due_date);
+
+            if (existing) {
+                // Already processed, just update next due date
+                const next_due_date = calculateNextDueDate(
+                    expense.frequency,
+                    expense.due_day_of_week,
+                    expense.due_day_of_month,
+                    expense.due_date
+                );
+                db.prepare('UPDATE recurring_expenses SET next_due_date = ? WHERE id = ?')
+                    .run(next_due_date, expense.id);
+                skipped++;
+                continue;
             }
+
+            // Create transaction
+            const result = db.prepare(`
+                INSERT INTO transactions (
+                    user_id, account_id, transaction_type, category, description,
+                    amount, transaction_date, is_recurring, recurring_expense_id,
+                    status, budget_amount
+                ) VALUES (?, ?, 'expense', ?, ?, ?, ?, 1, ?, 'completed', ?)
+            `).run(
+                userId,
+                expense.account_id,
+                expense.description,
+                expense.description,
+                expense.amount,
+                expense.next_due_date,
+                expense.id,
+                expense.amount
+            );
+
+            // Deduct from account
+            if (expense.account_id) {
+                db.prepare('UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?')
+                    .run(expense.amount, expense.account_id);
+            }
+
+            // Update next due date
+            const next_due_date = calculateNextDueDate(
+                expense.frequency,
+                expense.due_day_of_week,
+                expense.due_day_of_month,
+                expense.due_date
+            );
+            db.prepare('UPDATE recurring_expenses SET next_due_date = ? WHERE id = ?')
+                .run(next_due_date, expense.id);
+
+            processed.push({
+                expense_id: expense.id,
+                description: expense.description,
+                amount: expense.amount,
+                transaction_id: result.lastInsertRowid,
+                due_date: expense.next_due_date,
+                next_due_date
+            });
+        } catch (expenseError) {
+            errors.push({
+                expense_id: expense.id,
+                description: expense.description,
+                error: expenseError.message
+            });
         }
-
-        // Determine new values (use existing if not provided)
-        const newAmount = amount !== undefined ? amount : existingTransaction.amount;
-        const newType = transaction_type || existingTransaction.transaction_type;
-        const newAccountId = account_id !== undefined ? account_id : existingTransaction.account_id;
-        const newDate = transaction_date || existingTransaction.transaction_date;
-        const newDescription = description !== undefined ? description : existingTransaction.description;
-        const newCategory = category !== undefined ? category : existingTransaction.category;
-
-        // Reverse old balance effect on old account
-        if (existingTransaction.account_id) {
-            const oldReversal = existingTransaction.transaction_type === 'income'
-                ? -existingTransaction.amount
-                : existingTransaction.amount;
-            db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?')
-                .run(oldReversal, existingTransaction.account_id);
-        }
-
-        // Apply new balance effect on new account
-        if (newAccountId) {
-            const newEffect = newType === 'income' ? newAmount : -newAmount;
-            db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?')
-                .run(newEffect, newAccountId);
-        }
-
-        // Update the transaction
-        db.prepare(`
-            UPDATE transactions
-            SET amount = ?, transaction_date = ?, transaction_type = ?,
-                account_id = ?, description = ?, category = ?
-            WHERE id = ? AND user_id = ?
-        `).run(newAmount, newDate, newType, newAccountId, newDescription, newCategory, transactionId, userId);
-
-        // Get and return the updated transaction
-        const updatedTransaction = db.prepare('SELECT * FROM transactions WHERE id = ?')
-            .get(transactionId);
-
-        res.json({ transaction: updatedTransaction });
-    } catch (error) {
-        console.error('Update transaction error:', error);
-        res.status(500).json({ error: 'Server error updating transaction' });
     }
-});
 
-// ============================================
-// TRANSFER ENDPOINTS
-// ============================================
+    return { processed, errors, skipped };
+}
 
-// Calculate required transfers for expense account
-app.post('/api/transfers/calculate', authenticateToken, (req, res) => {
+/**
+ * Process scheduled transfers for a user
+ * @param {number} userId - The user ID
+ * @param {string} targetDate - YYYY-MM-DD date to process
+ * @param {boolean} exactDateOnly - If true, only process items due on exact date (for scheduler)
+ * @returns {object} { processed: [], errors: [] }
+ */
+function processScheduledTransfersForUser(userId, targetDate, exactDateOnly = false) {
+    const dateCondition = exactDateOnly ? '= ?' : '<= ?';
+
+    // Get all due transfers
+    const dueTransfers = db.prepare(`
+        SELECT t.*, a.name as to_account_name, a.current_balance
+        FROM transfers t
+        LEFT JOIN accounts a ON t.to_account_id = a.id
+        WHERE t.user_id = ?
+            AND t.scheduled_date ${dateCondition}
+            AND t.status = 'scheduled'
+    `).all(userId, targetDate);
+
+    const processed = [];
+    const errors = [];
+
+    for (const transfer of dueTransfers) {
+        try {
+            // Update transfer status
+            db.prepare(`
+                UPDATE transfers
+                SET status = 'completed', executed_date = ?
+                WHERE id = ?
+            `).run(targetDate, transfer.id);
+
+            // Update account balance (add to destination account)
+            if (transfer.to_account_id) {
+                db.prepare(`
+                    UPDATE accounts
+                    SET current_balance = current_balance + ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                `).run(transfer.amount, transfer.to_account_id);
+            }
+
+            processed.push({
+                transfer_id: transfer.id,
+                to_account: transfer.to_account_name,
+                amount: transfer.amount,
+                scheduled_date: transfer.scheduled_date
+            });
+        } catch (transferError) {
+            errors.push({
+                transfer_id: transfer.id,
+                error: transferError.message
+            });
+        }
+    }
+
+    return { processed, errors };
+}
+
+// Process due automatic expenses endpoint (uses internal function)
+app.post('/api/transactions/process-due', authenticateToken, (req, res) => {
     try {
         const userId = req.user.userId;
-        const { weeks = 16 } = req.body;
+        const todayStr = formatDateLocal(new Date());
+        const { exactDateOnly = false } = req.body || {};
 
-        // Get user's budget with expenses and accounts
-        const budget = db.prepare(`
-            SELECT * FROM budget_data
-            WHERE user_id = ?
-            ORDER BY updated_at DESC
-            LIMIT 1
-        `).get(userId);
-
-        if (!budget) {
-            return res.status(400).json({ error: 'No budget found. Please create a budget first.' });
-        }
-
-        // Parse accounts and find expense account
-        const accounts = budget.accounts ? JSON.parse(budget.accounts) : [];
-        const expenseAccount = accounts.find(acc => acc.isExpenseAccount === true || acc.isExpenseAccount === 1);
-
-        if (!expenseAccount) {
-            return res.status(404).json({ error: 'No expense account configured' });
-        }
-
-        // Parse expenses from JSON
-        const expenses = budget.expenses ? JSON.parse(budget.expenses) : [];
-
-        // Helper function to format date as YYYY-MM-DD in local time (not UTC)
-        function formatDateLocal(date) {
-            const year = date.getFullYear();
-            const month = String(date.getMonth() + 1).padStart(2, '0');
-            const day = String(date.getDate()).padStart(2, '0');
-            return `${year}-${month}-${day}`;
-        }
-
-        // Helper function to get next Monday
-        function getNextMonday() {
-            const today = new Date();
-            const dayOfWeek = today.getDay();
-            let daysUntilNextMonday;
-            if (dayOfWeek === 0) {
-                // Sunday
-                daysUntilNextMonday = 1;
-            } else {
-                // Monday through Saturday: go to next Monday
-                daysUntilNextMonday = 8 - dayOfWeek;
-            }
-            const nextMonday = new Date(today);
-            nextMonday.setDate(today.getDate() + daysUntilNextMonday);
-            nextMonday.setHours(0, 0, 0, 0);
-            return nextMonday;
-        }
-
-        // For expense accounts, always use next Monday (matches frontend behavior)
-        // For other accounts, use stored date or current date
-        const startingDate = getNextMonday();
-        console.log('Backend - startingDate from getNextMonday():', formatDateLocal(startingDate), 'Day of week:', startingDate.getDay());
-
-        // Normalize to Monday of the week (should already be Monday, but ensure it)
-        const dayOfWeek = startingDate.getDay();
-        let daysToMonday;
-        if (dayOfWeek === 0) {
-            // Sunday: go forward 1 day to Monday
-            daysToMonday = 1;
-        } else if (dayOfWeek === 1) {
-            // Already Monday
-            daysToMonday = 0;
-        } else {
-            // Tue-Sat: go back to Monday of this week
-            daysToMonday = -(dayOfWeek - 1);
-        }
-
-        const firstMonday = new Date(startingDate);
-        firstMonday.setDate(startingDate.getDate() + daysToMonday);
-        firstMonday.setHours(0, 0, 0, 0);
-        console.log('Backend - firstMonday after normalization:', formatDateLocal(firstMonday), 'Day of week:', firstMonday.getDay());
-
-        // Calculate weekly projection
-        const projection = [];
-        let currentBalance = parseFloat(expenseAccount.balance) || 0;
-
-        for (let week = 0; week < weeks; week++) {
-            const weekStart = new Date(firstMonday);
-            weekStart.setDate(firstMonday.getDate() + (week * 7));
-
-            const weekEnd = new Date(weekStart);
-            weekEnd.setDate(weekStart.getDate() + 6);
-
-            // Calculate expenses due this week
-            let weeklyExpenses = 0;
-            const expensesDue = [];
-
-            expenses.forEach(exp => {
-                const period = exp.period || 'weekly';
-                const amount = parseFloat(exp.amount) || 0;
-                const description = exp.description || 'Unnamed expense';
-                let isDue = false;
-
-                // Handle weekly expenses
-                if (period === 'weekly') {
-                    isDue = true;
-                }
-                // Handle fortnightly expenses
-                else if (period === 'fortnightly' && week % 2 === 0) {
-                    isDue = true;
-                }
-                // Handle monthly/annual expenses with specific dates
-                else if ((period === 'monthly' || period === 'annual') && exp.date) {
-                    const dueDate = new Date(exp.date);
-                    // Check if due date falls within this week
-                    if (dueDate >= weekStart && dueDate <= weekEnd) {
-                        isDue = true;
-                    }
-                }
-
-                if (isDue) {
-                    weeklyExpenses += amount;
-                    expensesDue.push({
-                        name: description,
-                        amount: amount,
-                        frequency: period,
-                        date: exp.date || null
-                    });
-                }
-            });
-
-            // Required balance is current expenses + next week's expenses (1 week ahead rule)
-            const nextWeekExpenses = week < weeks - 1 ? weeklyExpenses : 0;
-            const requiredBalance = weeklyExpenses + nextWeekExpenses;
-
-            // Calculate transfer needed
-            const deficit = requiredBalance - currentBalance;
-            const transferAmount = Math.max(0, deficit);
-
-            projection.push({
-                week: week + 1,
-                weekStart: formatDateLocal(weekStart),
-                weekEnd: formatDateLocal(weekEnd),
-                expenses: weeklyExpenses,
-                expensesDue: expensesDue,
-                requiredBalance,
-                currentBalance,
-                transferNeeded: transferAmount
-            });
-
-            // Update balance for next iteration
-            currentBalance = currentBalance - weeklyExpenses + transferAmount;
-        }
+        const result = processAutomaticExpensesForUser(userId, todayStr, exactDateOnly);
 
         res.json({
-            expenseAccount: {
-                id: expenseAccount.id,
-                name: expenseAccount.name,
-                currentBalance: expenseAccount.current_balance
-            },
-            projection,
-            summary: {
-                totalTransfersNeeded: projection.reduce((sum, week) => sum + week.transferNeeded, 0),
-                averageWeeklyTransfer: projection.reduce((sum, week) => sum + week.transferNeeded, 0) / weeks
-            }
+            message: 'Due expenses processed',
+            processed_count: result.processed.length,
+            processed: result.processed,
+            skipped_count: result.skipped,
+            errors_count: result.errors.length,
+            errors: result.errors
         });
     } catch (error) {
-        console.error('Calculate transfers error:', error);
-        res.status(500).json({ error: 'Server error calculating transfers' });
+        console.error('Process due expenses error:', error);
+        res.status(500).json({ error: 'Server error processing due expenses' });
     }
 });
 
-// Calculate required transfers with sub-account breakdown
-app.post('/api/transfers/calculate-with-subaccounts', authenticateToken, (req, res) => {
+// ============================================
+// TRANSFER SCHEDULE ENDPOINTS
+// ============================================
+
+// Helper function to generate transfer instances from schedules
+function generateTransfersFromSchedules(userId, days = 30) {
+    const todayStr = formatDateLocal(new Date());
+    const endDate = new Date();
+    endDate.setDate(endDate.getDate() + days);
+    const endDateStr = formatDateLocal(endDate);
+
+    // Clean up future scheduled transfers before regenerating
+    // This prevents duplicates when day_of_week changes
+    db.prepare(`
+        DELETE FROM transfers
+        WHERE user_id = ? AND status = 'scheduled' AND scheduled_date > ?
+    `).run(userId, todayStr);
+
+    // Get all active schedules for user
+    const schedules = db.prepare(`
+        SELECT * FROM transfer_schedules
+        WHERE user_id = ? AND is_active = 1
+    `).all(userId);
+
+    let created = 0;
+
+    for (const schedule of schedules) {
+        // Get day of week (0 = Sunday, 1 = Monday, etc.) - default to Monday if not set
+        const targetDayOfWeek = schedule.day_of_week ?? 1;
+
+        // Find the next occurrence of that day starting from today
+        const today = new Date();
+        let nextDate = new Date(today);
+        const currentDayOfWeek = today.getDay();
+        let daysUntilNext = targetDayOfWeek - currentDayOfWeek;
+        if (daysUntilNext < 0) {
+            daysUntilNext += 7;
+        }
+        nextDate.setDate(today.getDate() + daysUntilNext);
+
+        // Generate transfers for each week within the range
+        while (nextDate <= endDate) {
+            const scheduledDateStr = formatDateLocal(nextDate);
+
+            // Check if transfer already exists for this schedule + date
+            const existing = db.prepare(`
+                SELECT id FROM transfers
+                WHERE user_id = ? AND schedule_id = ? AND scheduled_date = ?
+            `).get(userId, schedule.id, scheduledDateStr);
+
+            if (!existing) {
+                // Create the transfer
+                db.prepare(`
+                    INSERT INTO transfers (
+                        user_id, schedule_id, from_account_id, to_account_id,
+                        amount, scheduled_date, status
+                    ) VALUES (?, ?, ?, ?, ?, ?, 'scheduled')
+                `).run(
+                    userId,
+                    schedule.id,
+                    schedule.from_account_id,
+                    schedule.to_account_id,
+                    schedule.amount,
+                    scheduledDateStr
+                );
+                created++;
+            }
+
+            // Move to next week
+            nextDate.setDate(nextDate.getDate() + 7);
+        }
+    }
+
+    return created;
+}
+
+// Sync transfer schedules from frontend recommendations
+app.post('/api/transfer-schedules/sync', authenticateToken, (req, res) => {
     try {
         const userId = req.user.userId;
-        const { weeks = 16 } = req.body;
+        const { recommendations } = req.body;
 
-        // Get expense account and its sub-accounts
-        const expenseAccount = db.prepare(`
-            SELECT * FROM accounts
-            WHERE user_id = ? AND is_expense_account = 1 AND parent_account_id IS NULL
-            LIMIT 1
-        `).get(userId);
-
-        if (!expenseAccount) {
-            return res.status(404).json({ error: 'No expense account configured' });
+        if (!recommendations || !Array.isArray(recommendations)) {
+            return res.status(400).json({ error: 'recommendations array is required' });
         }
 
-        // Get all sub-accounts
-        const subAccounts = db.prepare(`
-            SELECT * FROM accounts
-            WHERE user_id = ? AND parent_account_id = ?
-            ORDER BY name ASC
-        `).all(userId, expenseAccount.id);
+        const todayStr = formatDateLocal(new Date());
+        const dayOfWeek = 1; // Always schedule transfers for Monday
 
-        // Get all recurring expenses
-        const recurringExpenses = db.prepare(`
-            SELECT * FROM recurring_expenses
-            WHERE user_id = ? AND is_active = 1
-            ORDER BY next_due_date ASC
+        // Get user's accounts to resolve frontend IDs to database IDs
+        const userAccounts = db.prepare(`
+            SELECT id, frontend_id FROM accounts WHERE user_id = ?
         `).all(userId);
 
-        // Helper function to format date
-        function formatDateLocal(date) {
-            const year = date.getFullYear();
-            const month = String(date.getMonth() + 1).padStart(2, '0');
-            const day = String(date.getDate()).padStart(2, '0');
-            return `${year}-${month}-${day}`;
-        }
-
-        // Helper function to get next Monday
-        function getNextMonday() {
-            const today = new Date();
-            const dayOfWeek = today.getDay();
-            const daysUntilNextMonday = dayOfWeek === 0 ? 1 : 8 - dayOfWeek;
-            const nextMonday = new Date(today);
-            nextMonday.setDate(today.getDate() + daysUntilNextMonday);
-            nextMonday.setHours(0, 0, 0, 0);
-            return nextMonday;
-        }
-
-        const firstMonday = getNextMonday();
-
-        // Helper function to check if expense is due in a given week
-        function isExpenseDueInWeek(expense, weekStart, weekEnd, weekNumber) {
-            const { frequency, due_day_of_week, due_day_of_month, due_date, next_due_date } = expense;
-
-            if (frequency === 'weekly') {
-                return true;
-            } else if (frequency === 'fortnightly') {
-                return weekNumber % 2 === 0;
-            } else if (frequency === 'monthly' && due_day_of_month) {
-                // Check if this month's due day falls in this week
-                for (let d = new Date(weekStart); d <= weekEnd; d.setDate(d.getDate() + 1)) {
-                    if (d.getDate() === due_day_of_month) {
-                        return true;
-                    }
-                }
-            } else if (frequency === 'annual' && due_date) {
-                const dueDate = new Date(due_date);
-                return dueDate >= weekStart && dueDate <= weekEnd;
+        // Create a map from frontend_id to database id
+        const frontendIdToDbId = {};
+        for (const acc of userAccounts) {
+            if (acc.frontend_id) {
+                frontendIdToDbId[acc.frontend_id] = acc.id;
             }
-            return false;
+            // Also map by database id (in case frontend sends db id directly)
+            frontendIdToDbId[acc.id] = acc.id;
         }
 
-        // Calculate projection
-        const projection = [];
-        const subAccountBalances = {};
+        // Get existing active schedules
+        const existingSchedules = db.prepare(`
+            SELECT * FROM transfer_schedules
+            WHERE user_id = ? AND is_active = 1
+        `).all(userId);
 
-        // Initialize sub-account balances
-        if (subAccounts.length > 0) {
-            subAccounts.forEach(subAcc => {
-                subAccountBalances[subAcc.id] = parseFloat(subAcc.current_balance) || 0;
-            });
-        } else {
-            // If no sub-accounts, use parent expense account
-            subAccountBalances[expenseAccount.id] = parseFloat(expenseAccount.current_balance) || 0;
-        }
+        const stats = { created: 0, updated: 0, deactivated: 0, skipped: 0 };
+        const processedDbAccountIds = new Set();
 
-        for (let week = 0; week < weeks; week++) {
-            const weekStart = new Date(firstMonday);
-            weekStart.setDate(firstMonday.getDate() + (week * 7));
+        // Process each recommendation
+        for (const rec of recommendations) {
+            if (!rec.accountId || rec.recommendedTransfer <= 0) continue;
 
-            const weekEnd = new Date(weekStart);
-            weekEnd.setDate(weekStart.getDate() + 6);
+            // Resolve frontend ID to database ID
+            const dbAccountId = frontendIdToDbId[rec.accountId];
+            if (!dbAccountId) {
+                console.warn(`Could not resolve account ID: ${rec.accountId}`);
+                stats.skipped++;
+                continue;
+            }
 
-            // Calculate expenses by sub-account
-            const subAccountExpenses = {};
-            const unallocatedExpenses = [];
+            processedDbAccountIds.add(dbAccountId);
 
-            // Initialize all sub-accounts with zero
-            if (subAccounts.length > 0) {
-                subAccounts.forEach(subAcc => {
-                    subAccountExpenses[subAcc.id] = {
-                        subAccountId: subAcc.id,
-                        subAccountName: subAcc.name,
-                        expenses: [],
-                        total: 0,
-                        currentBalance: subAccountBalances[subAcc.id],
-                        requiredBalance: 0,
-                        transferNeeded: 0
-                    };
-                });
+            // Find existing schedule for this account (using database ID)
+            const existing = existingSchedules.find(s => s.to_account_id === dbAccountId);
+
+            if (existing) {
+                // Update if amount changed
+                if (Math.abs(existing.amount - rec.recommendedTransfer) > 0.01) {
+                    db.prepare(`
+                        UPDATE transfer_schedules
+                        SET amount = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                    `).run(rec.recommendedTransfer, existing.id);
+                    stats.updated++;
+                }
             } else {
-                subAccountExpenses[expenseAccount.id] = {
-                    subAccountId: expenseAccount.id,
-                    subAccountName: expenseAccount.name,
-                    expenses: [],
-                    total: 0,
-                    currentBalance: subAccountBalances[expenseAccount.id],
-                    requiredBalance: 0,
-                    transferNeeded: 0
-                };
+                // Create new schedule with database ID
+                db.prepare(`
+                    INSERT INTO transfer_schedules (
+                        user_id, from_account_id, to_account_id, amount,
+                        frequency, day_of_week, start_date, is_active, is_auto_calculated
+                    ) VALUES (?, NULL, ?, ?, 'weekly', ?, ?, 1, 1)
+                `).run(userId, dbAccountId, rec.recommendedTransfer, dayOfWeek, todayStr);
+                stats.created++;
             }
-
-            // Group expenses by sub-account
-            recurringExpenses.forEach(expense => {
-                if (isExpenseDueInWeek(expense, weekStart, weekEnd, week)) {
-                    const accountId = expense.account_id || expenseAccount.id;
-                    const expenseData = {
-                        name: expense.description,
-                        amount: parseFloat(expense.amount),
-                        frequency: expense.frequency
-                    };
-
-                    if (subAccountExpenses[accountId]) {
-                        subAccountExpenses[accountId].expenses.push(expenseData);
-                        subAccountExpenses[accountId].total += expenseData.amount;
-                    } else {
-                        unallocatedExpenses.push(expenseData);
-                    }
-                }
-            });
-
-            // Calculate required balance and transfers for each sub-account (1-week ahead rule)
-            let totalWeeklyExpenses = 0;
-            let totalTransferNeeded = 0;
-
-            Object.keys(subAccountExpenses).forEach(subAccId => {
-                const subAcc = subAccountExpenses[subAccId];
-                const thisWeekExpenses = subAcc.total;
-                const nextWeekExpenses = week < weeks - 1 ? thisWeekExpenses : 0; // Simplified: assume same expenses next week
-
-                subAcc.requiredBalance = thisWeekExpenses + nextWeekExpenses;
-                const deficit = subAcc.requiredBalance - subAcc.currentBalance;
-                subAcc.transferNeeded = Math.max(0, deficit);
-
-                totalWeeklyExpenses += thisWeekExpenses;
-                totalTransferNeeded += subAcc.transferNeeded;
-
-                // Update balance for next iteration
-                subAccountBalances[subAccId] = subAcc.currentBalance - thisWeekExpenses + subAcc.transferNeeded;
-            });
-
-            projection.push({
-                week: week + 1,
-                weekStart: formatDateLocal(weekStart),
-                weekEnd: formatDateLocal(weekEnd),
-                totalExpenses: totalWeeklyExpenses,
-                totalTransferNeeded,
-                subAccounts: Object.values(subAccountExpenses),
-                unallocatedExpenses
-            });
         }
 
-        // Calculate total balance (sum of all sub-accounts)
-        const totalCurrentBalance = Object.values(subAccountBalances).reduce((sum, bal) => sum + bal, 0);
+        // Deactivate schedules for accounts no longer in recommendations
+        for (const schedule of existingSchedules) {
+            if (!processedDbAccountIds.has(schedule.to_account_id)) {
+                db.prepare(`
+                    UPDATE transfer_schedules
+                    SET is_active = 0, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                `).run(schedule.id);
+                stats.deactivated++;
+            }
+        }
+
+        // Generate transfer instances for the next 30 days
+        const transfersCreated = generateTransfersFromSchedules(userId, 30);
+
+        // Get updated schedules to return
+        const updatedSchedules = db.prepare(`
+            SELECT ts.*, a.name as to_account_name
+            FROM transfer_schedules ts
+            LEFT JOIN accounts a ON ts.to_account_id = a.id
+            WHERE ts.user_id = ? AND ts.is_active = 1
+        `).all(userId);
 
         res.json({
-            expenseAccount: {
-                id: expenseAccount.id,
-                name: expenseAccount.name,
-                currentBalance: totalCurrentBalance,
-                hasSubAccounts: subAccounts.length > 0
-            },
-            subAccounts: subAccounts.map(sa => ({
-                id: sa.id,
-                name: sa.name,
-                currentBalance: sa.current_balance,
-                autoAllocate: sa.auto_allocate
-            })),
-            projection,
-            summary: {
-                totalTransfersNeeded: projection.reduce((sum, week) => sum + week.totalTransferNeeded, 0),
-                averageWeeklyTransfer: projection.reduce((sum, week) => sum + week.totalTransferNeeded, 0) / weeks
-            }
+            message: 'Transfer schedules synced successfully',
+            ...stats,
+            transfers_generated: transfersCreated,
+            schedules: updatedSchedules
         });
     } catch (error) {
-        console.error('Calculate transfers with subaccounts error:', error);
-        res.status(500).json({ error: 'Server error calculating transfers' });
+        console.error('Sync transfer schedules error:', error);
+        res.status(500).json({ error: 'Server error syncing transfer schedules' });
     }
 });
 
-// Get sub-account balance warnings
-app.get('/api/accounts/subaccount-warnings', authenticateToken, (req, res) => {
+// Process due transfers endpoint (uses internal function)
+app.post('/api/transfers/process-due', authenticateToken, (req, res) => {
     try {
         const userId = req.user.userId;
+        const todayStr = formatDateLocal(new Date());
+        const { exactDateOnly = false } = req.body || {};
 
-        // Get expense account
-        const expenseAccount = db.prepare(`
-            SELECT * FROM accounts
-            WHERE user_id = ? AND is_expense_account = 1 AND parent_account_id IS NULL
-            LIMIT 1
-        `).get(userId);
+        const result = processScheduledTransfersForUser(userId, todayStr, exactDateOnly);
 
-        if (!expenseAccount) {
-            return res.json({ warnings: [] });
-        }
-
-        // Get all sub-accounts
-        const subAccounts = db.prepare(`
-            SELECT * FROM accounts
-            WHERE user_id = ? AND parent_account_id = ?
-            ORDER BY name ASC
-        `).all(userId, expenseAccount.id);
-
-        if (subAccounts.length === 0) {
-            return res.json({ warnings: [] });
-        }
-
-        // Get upcoming expenses (next 7 days)
-        const warnings = [];
-
-        subAccounts.forEach(subAccount => {
-            const balance = parseFloat(subAccount.current_balance) || 0;
-
-            // Get expenses for this sub-account in the next week
-            const upcomingExpenses = db.prepare(`
-                SELECT SUM(amount) as total
-                FROM recurring_expenses
-                WHERE user_id = ?
-                    AND account_id = ?
-                    AND is_active = 1
-                    AND next_due_date <= date('now', '+7 days')
-            `).get(userId, subAccount.id);
-
-            const upcomingTotal = parseFloat(upcomingExpenses?.total) || 0;
-
-            // Determine severity
-            let severity = null;
-            let message = null;
-
-            if (balance < 0) {
-                severity = 'critical';
-                message = `Negative balance: $${Math.abs(balance).toFixed(2)}`;
-            } else if (upcomingTotal > balance) {
-                severity = 'warning';
-                message = `Insufficient funds: $${balance.toFixed(2)} available, $${upcomingTotal.toFixed(2)} needed`;
-            } else if (upcomingTotal > 0 && balance < upcomingTotal * 1.2) {
-                severity = 'info';
-                message = `Low balance: $${balance.toFixed(2)} available, $${upcomingTotal.toFixed(2)} due soon`;
-            }
-
-            if (severity) {
-                warnings.push({
-                    subAccountId: subAccount.id,
-                    subAccountName: subAccount.name,
-                    currentBalance: balance,
-                    upcomingExpenses: upcomingTotal,
-                    severity,
-                    message
-                });
-            }
+        res.json({
+            message: 'Due transfers processed',
+            processed_count: result.processed.length,
+            processed: result.processed,
+            errors_count: result.errors.length,
+            errors: result.errors
         });
-
-        res.json({ warnings });
     } catch (error) {
-        console.error('Get subaccount warnings error:', error);
-        res.status(500).json({ error: 'Server error fetching warnings' });
+        console.error('Process due transfers error:', error);
+        res.status(500).json({ error: 'Server error processing due transfers' });
     }
 });
 
-// Create transfer schedule
-app.post('/api/transfer-schedules', authenticateToken, (req, res) => {
-    try {
-        const {
-            from_account_id,
-            to_account_id,
-            amount,
-            frequency,
-            day_of_week,
-            start_date,
-            standardization_date
-        } = req.body;
-        const userId = req.user.userId;
-
-        if (!from_account_id || !to_account_id || !amount || !start_date) {
-            return res.status(400).json({ error: 'From account, to account, amount, and start date are required' });
-        }
-
-        // Verify accounts belong to user
-        const fromAccount = db.prepare('SELECT id FROM accounts WHERE id = ? AND user_id = ?')
-            .get(from_account_id, userId);
-        const toAccount = db.prepare('SELECT id FROM accounts WHERE id = ? AND user_id = ?')
-            .get(to_account_id, userId);
-
-        if (!fromAccount || !toAccount) {
-            return res.status(404).json({ error: 'One or both accounts not found' });
-        }
-
-        const result = db.prepare(`
-            INSERT INTO transfer_schedules (
-                user_id, from_account_id, to_account_id, amount, frequency,
-                day_of_week, start_date, standardization_date
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-            userId,
-            from_account_id,
-            to_account_id,
-            amount,
-            frequency || 'weekly',
-            day_of_week || null,
-            start_date,
-            standardization_date || null
-        );
-
-        const schedule = db.prepare('SELECT * FROM transfer_schedules WHERE id = ?').get(result.lastInsertRowid);
-
-        res.status(201).json({
-            message: 'Transfer schedule created successfully',
-            schedule
-        });
-    } catch (error) {
-        console.error('Create transfer schedule error:', error);
-        res.status(500).json({ error: 'Server error creating transfer schedule' });
-    }
-});
-
-// Get all transfer schedules
+// Get transfer schedules
 app.get('/api/transfer-schedules', authenticateToken, (req, res) => {
     try {
         const userId = req.user.userId;
+        const { active_only = 'true' } = req.query;
 
-        const schedules = db.prepare(`
-            SELECT ts.*,
-                fa.name as from_account_name,
-                ta.name as to_account_name
+        let query = `
+            SELECT ts.*, a.name as to_account_name
             FROM transfer_schedules ts
-            JOIN accounts fa ON ts.from_account_id = fa.id
-            JOIN accounts ta ON ts.to_account_id = ta.id
-            WHERE ts.user_id = ? AND ts.is_active = 1
-            ORDER BY ts.created_at DESC
-        `).all(userId);
+            LEFT JOIN accounts a ON ts.to_account_id = a.id
+            WHERE ts.user_id = ?
+        `;
 
+        if (active_only === 'true') {
+            query += ' AND ts.is_active = 1';
+        }
+
+        query += ' ORDER BY ts.created_at DESC';
+
+        const schedules = db.prepare(query).all(userId);
         res.json({ schedules });
     } catch (error) {
         console.error('Get transfer schedules error:', error);
@@ -1880,1253 +1898,421 @@ app.get('/api/transfer-schedules', authenticateToken, (req, res) => {
     }
 });
 
-// Generate scheduled transfers (create pending transfers based on schedules)
-app.post('/api/transfers/generate', authenticateToken, (req, res) => {
-    try {
-        const userId = req.user.userId;
-        const { weeks_ahead = 4 } = req.body;
-
-        const schedules = db.prepare(`
-            SELECT * FROM transfer_schedules
-            WHERE user_id = ? AND is_active = 1
-        `).all(userId);
-
-        let generated = 0;
-        const today = new Date();
-
-        for (const schedule of schedules) {
-            const startDate = new Date(schedule.start_date);
-
-            for (let week = 0; week < weeks_ahead; week++) {
-                const transferDate = new Date(today);
-                transferDate.setDate(today.getDate() + (week * 7));
-
-                if (transferDate < startDate) continue;
-
-                // Check if transfer already exists for this date
-                const existing = db.prepare(`
-                    SELECT id FROM transfers
-                    WHERE schedule_id = ?
-                        AND scheduled_date = ?
-                        AND status != 'cancelled'
-                `).get(schedule.id, transferDate.toISOString().split('T')[0]);
-
-                if (!existing) {
-                    db.prepare(`
-                        INSERT INTO transfers (
-                            user_id, schedule_id, from_account_id, to_account_id,
-                            amount, scheduled_date, status
-                        ) VALUES (?, ?, ?, ?, ?, ?, 'scheduled')
-                    `).run(
-                        userId,
-                        schedule.id,
-                        schedule.from_account_id,
-                        schedule.to_account_id,
-                        schedule.amount,
-                        transferDate.toISOString().split('T')[0]
-                    );
-                    generated++;
-                }
-            }
-        }
-
-        res.json({
-            message: 'Transfers generated successfully',
-            generated,
-            weeks_ahead
-        });
-    } catch (error) {
-        console.error('Generate transfers error:', error);
-        res.status(500).json({ error: 'Server error generating transfers' });
-    }
-});
-
-// Get upcoming transfers
-app.get('/api/transfers/upcoming', authenticateToken, (req, res) => {
-    try {
-        const userId = req.user.userId;
-        const { days = 30 } = req.query;
-
-        const transfers = db.prepare(`
-            SELECT t.*,
-                fa.name as from_account_name,
-                ta.name as to_account_name
-            FROM transfers t
-            JOIN accounts fa ON t.from_account_id = fa.id
-            JOIN accounts ta ON t.to_account_id = ta.id
-            WHERE t.user_id = ?
-                AND t.status = 'scheduled'
-                AND t.scheduled_date <= date('now', '+' || ? || ' days')
-            ORDER BY t.scheduled_date ASC
-        `).all(userId, days);
-
-        res.json({ transfers, days: parseInt(days) });
-    } catch (error) {
-        console.error('Get upcoming transfers error:', error);
-        res.status(500).json({ error: 'Server error fetching upcoming transfers' });
-    }
-});
-
-// Execute transfer
-app.post('/api/transfers/:id/execute', authenticateToken, (req, res) => {
-    try {
-        const userId = req.user.userId;
-        const transferId = req.params.id;
-
-        const transfer = db.prepare('SELECT * FROM transfers WHERE id = ? AND user_id = ?')
-            .get(transferId, userId);
-
-        if (!transfer) {
-            return res.status(404).json({ error: 'Transfer not found' });
-        }
-
-        if (transfer.status !== 'scheduled') {
-            return res.status(400).json({ error: 'Transfer is not in scheduled status' });
-        }
-
-        // Begin transaction
-        db.exec('BEGIN TRANSACTION');
-
-        try {
-            // Update account balances
-            db.prepare('UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?')
-                .run(transfer.amount, transfer.from_account_id);
-
-            db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?')
-                .run(transfer.amount, transfer.to_account_id);
-
-            // Mark transfer as completed
-            db.prepare(`
-                UPDATE transfers
-                SET status = 'completed', executed_date = date('now')
-                WHERE id = ?
-            `).run(transferId);
-
-            // Create transaction records
-            const today = new Date().toISOString().split('T')[0];
-
-            db.prepare(`
-                INSERT INTO transactions (
-                    user_id, account_id, transaction_type, description, amount, transaction_date
-                ) VALUES (?, ?, 'transfer', ?, ?, ?)
-            `).run(userId, transfer.from_account_id, 'Transfer out', transfer.amount, today);
-
-            db.prepare(`
-                INSERT INTO transactions (
-                    user_id, account_id, transaction_type, description, amount, transaction_date
-                ) VALUES (?, ?, 'transfer', ?, ?, ?)
-            `).run(userId, transfer.to_account_id, 'Transfer in', transfer.amount, today);
-
-            db.exec('COMMIT');
-
-            const updatedTransfer = db.prepare('SELECT * FROM transfers WHERE id = ?').get(transferId);
-
-            res.json({
-                message: 'Transfer executed successfully',
-                transfer: updatedTransfer
-            });
-        } catch (execError) {
-            db.exec('ROLLBACK');
-            throw execError;
-        }
-    } catch (error) {
-        console.error('Execute transfer error:', error);
-        res.status(500).json({ error: 'Server error executing transfer' });
-    }
-});
-
-// Update transfer amount (dynamic adjustment)
-app.put('/api/transfers/:id', authenticateToken, (req, res) => {
-    try {
-        const userId = req.user.userId;
-        const transferId = req.params.id;
-        const { amount, notes } = req.body;
-
-        const transfer = db.prepare('SELECT * FROM transfers WHERE id = ? AND user_id = ?')
-            .get(transferId, userId);
-
-        if (!transfer) {
-            return res.status(404).json({ error: 'Transfer not found' });
-        }
-
-        if (transfer.status !== 'scheduled') {
-            return res.status(400).json({ error: 'Can only modify scheduled transfers' });
-        }
-
-        db.prepare(`
-            UPDATE transfers
-            SET amount = COALESCE(?, amount),
-                notes = COALESCE(?, notes)
-            WHERE id = ? AND user_id = ?
-        `).run(amount || null, notes || null, transferId, userId);
-
-        const updatedTransfer = db.prepare('SELECT * FROM transfers WHERE id = ?').get(transferId);
-
-        res.json({
-            message: 'Transfer updated successfully',
-            transfer: updatedTransfer
-        });
-    } catch (error) {
-        console.error('Update transfer error:', error);
-        res.status(500).json({ error: 'Server error updating transfer' });
-    }
-});
-
-// Cancel transfer
-app.post('/api/transfers/:id/cancel', authenticateToken, (req, res) => {
-    try {
-        const userId = req.user.userId;
-        const transferId = req.params.id;
-
-        const transfer = db.prepare('SELECT * FROM transfers WHERE id = ? AND user_id = ?')
-            .get(transferId, userId);
-
-        if (!transfer) {
-            return res.status(404).json({ error: 'Transfer not found' });
-        }
-
-        if (transfer.status !== 'scheduled') {
-            return res.status(400).json({ error: 'Can only cancel scheduled transfers' });
-        }
-
-        db.prepare('UPDATE transfers SET status = "cancelled" WHERE id = ?').run(transferId);
-
-        res.json({ message: 'Transfer cancelled successfully' });
-    } catch (error) {
-        console.error('Cancel transfer error:', error);
-        res.status(500).json({ error: 'Server error cancelling transfer' });
-    }
-});
-
-// ============================================
-// GOAL TIMELINE ENDPOINTS
-// ============================================
-
-// Calculate goal timeline with surplus allocation
-app.post('/api/goals/calculate-timeline', authenticateToken, (req, res) => {
-    try {
-        const userId = req.user.userId;
-        const { weeklySurplus } = req.body;
-
-        if (!weeklySurplus || weeklySurplus <= 0) {
-            return res.status(400).json({ error: 'Weekly surplus must be a positive number' });
-        }
-
-        // Get user's budget
-        const budget = db.prepare(`
-            SELECT * FROM budget_data
-            WHERE user_id = ?
-            ORDER BY updated_at DESC
-            LIMIT 1
-        `).get(userId);
-
-        if (!budget) {
-            return res.status(400).json({ error: 'No budget found' });
-        }
-
-        // Parse accounts
-        const accounts = budget.accounts ? JSON.parse(budget.accounts) : [];
-        const expenseAccount = accounts.find(acc => acc.isExpenseAccount);
-
-        if (!expenseAccount) {
-            return res.status(404).json({ error: 'No expense account found' });
-        }
-
-        // Parse expenses
-        const expenses = budget.expenses ? JSON.parse(budget.expenses) : [];
-
-        // Helper function to format date
-        function formatDateLocal(date) {
-            const year = date.getFullYear();
-            const month = String(date.getMonth() + 1).padStart(2, '0');
-            const day = String(date.getDate()).padStart(2, '0');
-            return `${year}-${month}-${day}`;
-        }
-
-        // Get next Monday
-        function getNextMonday() {
-            const today = new Date();
-            const dayOfWeek = today.getDay();
-            const daysUntilNextMonday = dayOfWeek === 0 ? 1 : 8 - dayOfWeek;
-            const nextMonday = new Date(today);
-            nextMonday.setDate(today.getDate() + daysUntilNextMonday);
-            nextMonday.setHours(0, 0, 0, 0);
-            return nextMonday;
-        }
-
-        const startDate = getNextMonday();
-
-        // Calculate total weekly expenses
-        let weeklyExpenses = 0;
-        expenses.forEach(exp => {
-            const amount = parseFloat(exp.amount) || 0;
-            const period = exp.period || 'weekly';
-
-            if (period === 'weekly') weeklyExpenses += amount;
-            else if (period === 'fortnightly') weeklyExpenses += amount / 2;
-            else if (period === 'monthly') weeklyExpenses += amount / 4.33;
-            else if (period === 'annual') weeklyExpenses += amount / 52;
-        });
-
-        // PHASE 1: Expense Account Catch-Up
-        const expenseBalance = parseFloat(expenseAccount.balance) || 0;
-        const equilibriumTransfer = weeklyExpenses; // This always comes from income, NOT surplus
-        const weekAheadBuffer = weeklyExpenses; // 1 week ahead
-        const targetBalance = equilibriumTransfer + weekAheadBuffer;
-
-        let catchUpPhase = [];
-        let currentExpenseBalance = expenseBalance;
-        let equilibriumReached = false;
-        let equilibriumWeek = 0;
-
-        for (let week = 1; week <= 104; week++) {
-            const weekDate = new Date(startDate);
-            weekDate.setDate(startDate.getDate() + ((week - 1) * 7));
-
-            // Calculate shortfall (how much buffer we're missing)
-            const shortfall = targetBalance - currentExpenseBalance;
-
-            // Base transfer from income (always happens)
-            let transferAmount = equilibriumTransfer;
-            let surplusUsed = 0;
-
-            if (shortfall > 0 && !equilibriumReached) {
-                // Use surplus to catch up the buffer
-                surplusUsed = Math.min(shortfall, weeklySurplus);
-                transferAmount = equilibriumTransfer + surplusUsed;
-            } else {
-                equilibriumReached = true;
-                if (equilibriumWeek === 0) equilibriumWeek = week;
-            }
-
-            // Update balance: subtract expenses, add transfer
-            currentExpenseBalance = currentExpenseBalance - weeklyExpenses + transferAmount;
-
-            catchUpPhase.push({
-                week,
-                weekDate: formatDateLocal(weekDate),
-                expenses: weeklyExpenses,
-                transferAmount,
-                surplusUsed,
-                balanceAfter: currentExpenseBalance,
-                isEquilibrium: equilibriumReached
-            });
-
-            if (equilibriumReached) break;
-        }
-
-        // PHASE 2: Goal Account Allocations
-        const goalAccounts = accounts.filter(acc =>
-            !acc.isExpenseAccount &&
-            acc.target &&
-            parseFloat(acc.target) > 0 &&
-            parseFloat(acc.balance || 0) < parseFloat(acc.target)
-        ).sort((a, b) => (a.priority || 1) - (b.priority || 1));
-
-        let goalTimeline = [];
-        let weekNum = equilibriumWeek || 1;
-        const goalProgress = {};
-
-        // Initialize goal progress tracking
-        goalAccounts.forEach(acc => {
-            goalProgress[acc.id] = {
-                name: acc.name,
-                currentBalance: parseFloat(acc.balance) || 0,
-                targetBalance: parseFloat(acc.target),
-                weeklyAllocation: 0,
-                weeksToComplete: 0,
-                completionWeek: null,
-                completionDate: null,
-                completed: false
-            };
-        });
-
-        // After equilibrium, ENTIRE surplus is available for goals
-        let remainingSurplus = weeklySurplus;
-
-        // Check if user has enough surplus to reach goals
-        const canAffordGoals = remainingSurplus > 0;
-
-        for (let week = weekNum; week <= weekNum + 208; week++) { // Max 4 years
-            const weekDate = new Date(startDate);
-            weekDate.setDate(startDate.getDate() + ((week - 1) * 7));
-
-            let weekAllocations = [];
-            let weekSurplus = remainingSurplus;
-            let allGoalsComplete = true;
-
-            // Skip goal allocation if no surplus available
-            if (!canAffordGoals) {
-                allGoalsComplete = true;
-                break;
-            }
-
-            for (const account of goalAccounts) {
-                const progress = goalProgress[account.id];
-
-                if (!progress.completed) {
-                    allGoalsComplete = false;
-                    const remaining = progress.targetBalance - progress.currentBalance;
-                    const allocation = Math.min(remaining, Math.max(0, weekSurplus));
-
-                    if (allocation > 0) {
-                        progress.currentBalance += allocation;
-                        weekSurplus -= allocation;
-                    }
-
-                    weekAllocations.push({
-                        accountId: account.id,
-                        accountName: account.name,
-                        allocation,
-                        balanceAfter: progress.currentBalance,
-                        target: progress.targetBalance,
-                        progressPercent: Math.round((progress.currentBalance / progress.targetBalance) * 100)
-                    });
-
-                    if (progress.currentBalance >= progress.targetBalance && !progress.completed) {
-                        progress.completed = true;
-                        progress.completionWeek = week;
-                        progress.completionDate = formatDateLocal(weekDate);
-                    }
-                }
-            }
-
-            if (weekAllocations.length > 0) {
-                goalTimeline.push({
-                    week,
-                    weekDate: formatDateLocal(weekDate),
-                    allocations: weekAllocations
-                });
-            }
-
-            if (allGoalsComplete) break;
-        }
-
-        // Calculate summary
-        const allGoalsComplete = Object.values(goalProgress).every(p => p.completed);
-        const lastCompletionWeek = Math.max(...Object.values(goalProgress)
-            .filter(p => p.completionWeek)
-            .map(p => p.completionWeek), 0);
-
-        res.json({
-            weeklySurplus,
-            expenseAccount: {
-                currentBalance: expenseBalance,
-                weeklyExpenses,
-                equilibriumTransfer,
-                targetBalance,
-                equilibriumWeek,
-                equilibriumDate: equilibriumWeek ? catchUpPhase[catchUpPhase.length - 1].weekDate : null
-            },
-            catchUpSchedule: catchUpPhase,
-            goalAccounts: Object.entries(goalProgress).map(([id, progress]) => ({
-                accountId: id,
-                ...progress
-            })),
-            goalTimeline,
-            summary: {
-                allGoalsComplete,
-                totalWeeks: lastCompletionWeek,
-                completionDate: lastCompletionWeek ? goalTimeline[goalTimeline.length - 1]?.weekDate : null,
-                totalSurplusNeeded: (lastCompletionWeek - equilibriumWeek) * remainingSurplus,
-                canAffordGoals,
-                remainingSurplus
-            }
-        });
-    } catch (error) {
-        console.error('Calculate goal timeline error:', error);
-        res.status(500).json({ error: 'Server error calculating goal timeline' });
-    }
-});
-
-// Create transfer schedules from goal timeline
-app.post('/api/goals/create-transfers', authenticateToken, (req, res) => {
-    try {
-        const userId = req.user.userId;
-        const { timelineData, sourceAccountId } = req.body;
-
-        if (!timelineData || !sourceAccountId) {
-            return res.status(400).json({ error: 'Timeline data and source account required' });
-        }
-
-        const createdSchedules = [];
-
-        // Create expense account catch-up schedule
-        if (timelineData.catchUpSchedule && timelineData.catchUpSchedule.length > 0) {
-            const schedule = timelineData.catchUpSchedule[0];
-            const expenseAccountId = timelineData.expenseAccount.accountId;
-
-            const result = db.prepare(`
-                INSERT INTO transfer_schedules (
-                    user_id, from_account_id, to_account_id, amount, frequency,
-                    start_date, standardization_date, is_active, is_auto_calculated
-                ) VALUES (?, ?, ?, ?, 'weekly', ?, ?, 1, 1)
-            `).run(
-                userId,
-                sourceAccountId,
-                expenseAccountId,
-                timelineData.expenseAccount.equilibriumTransfer,
-                schedule.weekDate,
-                timelineData.expenseAccount.equilibriumDate
-            );
-
-            createdSchedules.push({
-                id: result.lastInsertRowid,
-                type: 'expense_catchup',
-                account: 'Expense Account',
-                amount: timelineData.expenseAccount.equilibriumTransfer
-            });
-        }
-
-        // Create goal account schedules
-        if (timelineData.goalAccounts) {
-            for (const goal of timelineData.goalAccounts) {
-                if (goal.weeklyAllocation > 0 && !goal.completed) {
-                    const startWeek = timelineData.equilibriumWeek || 1;
-                    const startDate = new Date(timelineData.catchUpSchedule[startWeek - 1]?.weekDate || new Date());
-
-                    const result = db.prepare(`
-                        INSERT INTO transfer_schedules (
-                            user_id, from_account_id, to_account_id, amount, frequency,
-                            start_date, is_active, is_auto_calculated
-                        ) VALUES (?, ?, ?, ?, 'weekly', ?, 1, 1)
-                    `).run(
-                        userId,
-                        sourceAccountId,
-                        goal.accountId,
-                        goal.weeklyAllocation,
-                        startDate.toISOString().split('T')[0]
-                    );
-
-                    createdSchedules.push({
-                        id: result.lastInsertRowid,
-                        type: 'goal',
-                        account: goal.name,
-                        amount: goal.weeklyAllocation
-                    });
-                }
-            }
-        }
-
-        res.json({
-            message: 'Transfer schedules created successfully',
-            schedules: createdSchedules,
-            count: createdSchedules.length
-        });
-    } catch (error) {
-        console.error('Create goal transfers error:', error);
-        res.status(500).json({ error: 'Server error creating transfer schedules' });
-    }
-});
-
-// ============================================
-// AUTOMATION ENDPOINTS
-// ============================================
-
-// Get automation state for user
-app.get('/api/automation/state', authenticateToken, (req, res) => {
-    try {
-        const userId = req.user.userId;
-
-        let state = db.prepare('SELECT * FROM automation_state WHERE user_id = ?').get(userId);
-
-        // Create default state if doesn't exist
-        if (!state) {
-            db.prepare(`
-                INSERT INTO automation_state (user_id, auto_transfer_enabled, auto_expense_enabled)
-                VALUES (?, 1, 1)
-            `).run(userId);
-            state = db.prepare('SELECT * FROM automation_state WHERE user_id = ?').get(userId);
-        }
-
-        res.json({
-            lastTransferDate: state.last_transfer_date,
-            lastExpenseCheckDate: state.last_expense_check_date,
-            autoTransferEnabled: state.auto_transfer_enabled === 1,
-            autoExpenseEnabled: state.auto_expense_enabled === 1,
-            updatedAt: state.updated_at
-        });
-    } catch (error) {
-        console.error('Get automation state error:', error);
-        res.status(500).json({ error: 'Server error getting automation state' });
-    }
-});
-
-// Update automation state
-app.put('/api/automation/state', authenticateToken, (req, res) => {
-    try {
-        const userId = req.user.userId;
-        const {
-            lastTransferDate,
-            lastExpenseCheckDate,
-            autoTransferEnabled,
-            autoExpenseEnabled
-        } = req.body;
-
-        // Ensure state record exists
-        const existing = db.prepare('SELECT id FROM automation_state WHERE user_id = ?').get(userId);
-
-        if (existing) {
-            const updates = [];
-            const values = [];
-
-            if (lastTransferDate !== undefined) {
-                updates.push('last_transfer_date = ?');
-                values.push(lastTransferDate);
-            }
-            if (lastExpenseCheckDate !== undefined) {
-                updates.push('last_expense_check_date = ?');
-                values.push(lastExpenseCheckDate);
-            }
-            if (autoTransferEnabled !== undefined) {
-                updates.push('auto_transfer_enabled = ?');
-                values.push(autoTransferEnabled ? 1 : 0);
-            }
-            if (autoExpenseEnabled !== undefined) {
-                updates.push('auto_expense_enabled = ?');
-                values.push(autoExpenseEnabled ? 1 : 0);
-            }
-
-            if (updates.length > 0) {
-                updates.push('updated_at = CURRENT_TIMESTAMP');
-                values.push(userId);
-
-                db.prepare(`
-                    UPDATE automation_state SET ${updates.join(', ')} WHERE user_id = ?
-                `).run(...values);
-            }
-        } else {
-            db.prepare(`
-                INSERT INTO automation_state (
-                    user_id, last_transfer_date, last_expense_check_date,
-                    auto_transfer_enabled, auto_expense_enabled
-                ) VALUES (?, ?, ?, ?, ?)
-            `).run(
-                userId,
-                lastTransferDate || null,
-                lastExpenseCheckDate || null,
-                autoTransferEnabled !== false ? 1 : 0,
-                autoExpenseEnabled !== false ? 1 : 0
-            );
-        }
-
-        res.json({ message: 'Automation state updated successfully' });
-    } catch (error) {
-        console.error('Update automation state error:', error);
-        res.status(500).json({ error: 'Server error updating automation state' });
-    }
-});
-
-// Get pending automation actions (preview without executing)
-app.get('/api/automation/pending', authenticateToken, (req, res) => {
-    try {
-        const userId = req.user.userId;
-
-        // Get automation state
-        const state = db.prepare('SELECT * FROM automation_state WHERE user_id = ?').get(userId);
-
-        // Get user's default budget
-        const budget = db.prepare(`
-            SELECT * FROM budget_data
-            WHERE user_id = ? AND is_default = 1
-        `).get(userId);
-
-        if (!budget) {
-            return res.json({
-                hasActions: false,
-                pendingTransfer: null,
-                pendingExpenses: []
-            });
-        }
-
-        const expenses = budget.expenses ? JSON.parse(budget.expenses) : [];
-        const accounts = budget.accounts ? JSON.parse(budget.accounts) : [];
-        const expenseAccount = accounts.find(a => a.isExpenseAccount);
-
-        const today = new Date();
-        const todayStr = today.toISOString().split('T')[0];
-
-        // Check for pending weekly transfer
-        let pendingTransfer = null;
-        if (state?.auto_transfer_enabled !== 0) {
-            const lastTransferDate = state?.last_transfer_date;
-            // Use model start date as baseline, or previous Monday if not set
-            const modelStartDate = budget.model_start_date;
-            let baselineDate;
-            if (lastTransferDate) {
-                baselineDate = new Date(lastTransferDate);
-            } else if (modelStartDate) {
-                // Use the Monday before model start date as baseline
-                baselineDate = getMonday(new Date(modelStartDate));
-                baselineDate.setDate(baselineDate.getDate() - 7);
-            } else {
-                // Default to previous Monday (1 week ago)
-                baselineDate = getMonday(today);
-                baselineDate.setDate(baselineDate.getDate() - 7);
-            }
-            const lastMonday = getMonday(baselineDate);
-            const thisMonday = getMonday(today);
-
-            if (thisMonday > lastMonday) {
-                // Calculate equilibrium (sum of weekly expenses)
-                const weeklyTotal = expenses.reduce((sum, exp) => {
-                    return sum + getWeeklyAmount(exp);
-                }, 0);
-
-                const missedWeeks = Math.floor((thisMonday - lastMonday) / (7 * 24 * 60 * 60 * 1000));
-                pendingTransfer = {
-                    isNewWeek: true,
-                    weekDate: thisMonday.toISOString().split('T')[0],
-                    equilibriumAmount: Math.round(weeklyTotal * 100) / 100,
-                    missedWeeks: Math.min(missedWeeks, 52) // Cap at 52 weeks to avoid absurd numbers
-                };
-            }
-        }
-
-        // Check for pending expense payments
-        // Find expenses due from last check date until today (past due) + today
-        const pendingExpenses = [];
-
-        // Determine start date for checking (last expense check or model start)
-        let checkFromDate;
-        if (state?.last_expense_check_date) {
-            checkFromDate = new Date(state.last_expense_check_date);
-        } else if (budget.model_start_date) {
-            checkFromDate = new Date(budget.model_start_date);
-        } else {
-            // Default to 1 week ago if no baseline
-            checkFromDate = new Date(today);
-            checkFromDate.setDate(checkFromDate.getDate() - 7);
-        }
-
-        // Include today and slightly into future (end of day)
-        const endDate = new Date(today);
-        endDate.setHours(23, 59, 59, 999);
-
-        for (const expense of expenses) {
-            // Find all due dates from last check until now
-            const dueDates = calculateDueDatesBetween(expense, checkFromDate, endDate);
-
-            for (const dueDate of dueDates) {
-                const subAccountBalance = expense.sub_account?.balance || 0;
-                const isManual = expense.autoPayEnabled === false;
-                const isPastDue = dueDate < today;
-                pendingExpenses.push({
-                    expenseId: expense.id,
-                    expenseName: expense.description || expense.name || 'Unnamed Expense',
-                    name: expense.description || expense.name || 'Unnamed Expense',
-                    amount: expense.amount,
-                    dueDate: dueDate.toISOString().split('T')[0],
-                    subAccountBalance,
-                    willGoNegative: subAccountBalance < expense.amount,
-                    deficitAmount: Math.max(0, expense.amount - subAccountBalance),
-                    isManual: isManual,
-                    isPastDue: isPastDue
-                });
-            }
-        }
-
-        // Sort by due date (oldest first) and limit to avoid overwhelming
-        pendingExpenses.sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
-        const limitedPendingExpenses = pendingExpenses.slice(0, 50);
-
-        res.json({
-            hasActions: pendingTransfer !== null || limitedPendingExpenses.length > 0,
-            pendingTransfer,
-            pendingExpenses: limitedPendingExpenses,
-            automationState: {
-                autoTransferEnabled: state?.auto_transfer_enabled === 1,
-                autoExpenseEnabled: state?.auto_expense_enabled === 1
-            }
-        });
-    } catch (error) {
-        console.error('Get pending automation error:', error);
-        res.status(500).json({ error: 'Server error getting pending actions' });
-    }
-});
-
-// Get payment history
-app.get('/api/payments/history', authenticateToken, (req, res) => {
-    try {
-        const userId = req.user.userId;
-        const { limit = 50, offset = 0, expenseId } = req.query;
-
-        let query = 'SELECT * FROM payment_history WHERE user_id = ?';
-        const params = [userId];
-
-        if (expenseId) {
-            query += ' AND expense_id = ?';
-            params.push(expenseId);
-        }
-
-        query += ' ORDER BY payment_date DESC, created_at DESC LIMIT ? OFFSET ?';
-        params.push(parseInt(limit), parseInt(offset));
-
-        const payments = db.prepare(query).all(...params);
-
-        // Get total count
-        let countQuery = 'SELECT COUNT(*) as count FROM payment_history WHERE user_id = ?';
-        const countParams = [userId];
-        if (expenseId) {
-            countQuery += ' AND expense_id = ?';
-            countParams.push(expenseId);
-        }
-        const totalCount = db.prepare(countQuery).get(...countParams).count;
-
-        res.json({
-            payments: payments.map(p => ({
-                id: p.id,
-                expenseId: p.expense_id,
-                expenseName: p.expense_name,
-                amountDue: p.amount_due,
-                amountPaid: p.amount_paid,
-                paymentDate: p.payment_date,
-                dueDate: p.due_date,
-                paymentType: p.payment_type,
-                balanceBefore: p.balance_before,
-                balanceAfter: p.balance_after,
-                wentNegative: p.went_negative === 1,
-                notes: p.notes,
-                createdAt: p.created_at
-            })),
-            total: totalCount,
-            limit: parseInt(limit),
-            offset: parseInt(offset)
-        });
-    } catch (error) {
-        console.error('Get payment history error:', error);
-        res.status(500).json({ error: 'Server error getting payment history' });
-    }
-});
-
-// Update a payment
-app.put('/api/payments/:id', authenticateToken, (req, res) => {
-    try {
-        const userId = req.user.userId;
-        const paymentId = req.params.id;
-        const { amount_paid, payment_date, notes } = req.body;
-
-        // Get existing payment
-        const existingPayment = db.prepare('SELECT * FROM payment_history WHERE id = ? AND user_id = ?')
-            .get(paymentId, userId);
-
-        if (!existingPayment) {
-            return res.status(404).json({ error: 'Payment not found' });
-        }
-
-        // Calculate balance adjustment if amount changed
-        const amountDiff = (amount_paid !== undefined ? amount_paid : existingPayment.amount_paid) - existingPayment.amount_paid;
-
-        // Update the payment
-        const newAmountPaid = amount_paid !== undefined ? amount_paid : existingPayment.amount_paid;
-        const newPaymentDate = payment_date || existingPayment.payment_date;
-        const newNotes = notes !== undefined ? notes : existingPayment.notes;
-        const newBalanceAfter = existingPayment.balance_after - amountDiff;
-
-        db.prepare(`
-            UPDATE payment_history
-            SET amount_paid = ?, payment_date = ?, notes = ?, balance_after = ?
-            WHERE id = ? AND user_id = ?
-        `).run(newAmountPaid, newPaymentDate, newNotes, newBalanceAfter, paymentId, userId);
-
-        // If amount changed, update the expense sub-account balance
-        if (amountDiff !== 0) {
-            // Find the expense and update its sub-account balance
-            const budget = db.prepare(`
-                SELECT * FROM budget_data
-                WHERE user_id = ? AND is_default = 1
-            `).get(userId);
-
-            if (budget && budget.expenses) {
-                const expenses = JSON.parse(budget.expenses);
-                const expense = expenses.find(e => e.id === existingPayment.expense_id);
-                if (expense && expense.sub_account) {
-                    expense.sub_account.balance = (expense.sub_account.balance || 0) - amountDiff;
-                    db.prepare('UPDATE budget_data SET expenses = ? WHERE id = ?')
-                        .run(JSON.stringify(expenses), budget.id);
-                }
-            }
-        }
-
-        // Get updated payment
-        const updatedPayment = db.prepare('SELECT * FROM payment_history WHERE id = ?').get(paymentId);
-
-        res.json({
-            payment: {
-                id: updatedPayment.id,
-                expenseId: updatedPayment.expense_id,
-                expenseName: updatedPayment.expense_name,
-                amountDue: updatedPayment.amount_due,
-                amountPaid: updatedPayment.amount_paid,
-                paymentDate: updatedPayment.payment_date,
-                dueDate: updatedPayment.due_date,
-                paymentType: updatedPayment.payment_type,
-                balanceBefore: updatedPayment.balance_before,
-                balanceAfter: updatedPayment.balance_after,
-                wentNegative: updatedPayment.went_negative === 1,
-                notes: updatedPayment.notes,
-                createdAt: updatedPayment.created_at
-            }
-        });
-    } catch (error) {
-        console.error('Update payment error:', error);
-        res.status(500).json({ error: 'Server error updating payment' });
-    }
-});
-
-// Delete a payment
-app.delete('/api/payments/:id', authenticateToken, (req, res) => {
-    try {
-        const userId = req.user.userId;
-        const paymentId = req.params.id;
-
-        // Get existing payment
-        const payment = db.prepare('SELECT * FROM payment_history WHERE id = ? AND user_id = ?')
-            .get(paymentId, userId);
-
-        if (!payment) {
-            return res.status(404).json({ error: 'Payment not found' });
-        }
-
-        // Restore the expense sub-account balance
-        const budget = db.prepare(`
-            SELECT * FROM budget_data
-            WHERE user_id = ? AND is_default = 1
-        `).get(userId);
-
-        if (budget && budget.expenses) {
-            const expenses = JSON.parse(budget.expenses);
-            const expense = expenses.find(e => e.id === payment.expense_id);
-            if (expense && expense.sub_account) {
-                expense.sub_account.balance = (expense.sub_account.balance || 0) + payment.amount_paid;
-                db.prepare('UPDATE budget_data SET expenses = ? WHERE id = ?')
-                    .run(JSON.stringify(expenses), budget.id);
-            }
-        }
-
-        // Delete the payment
-        db.prepare('DELETE FROM payment_history WHERE id = ? AND user_id = ?').run(paymentId, userId);
-
-        res.json({ message: 'Payment deleted successfully' });
-    } catch (error) {
-        console.error('Delete payment error:', error);
-        res.status(500).json({ error: 'Server error deleting payment' });
-    }
-});
-
-// Record a payment (manual or automatic)
-app.post('/api/expenses/:expenseId/pay', authenticateToken, (req, res) => {
-    try {
-        const userId = req.user.userId;
-        const { expenseId } = req.params;
-        const {
-            amount,
-            dueDate,
-            paymentType = 'manual',
-            notes = '',
-            balanceBefore,
-            balanceAfter
-        } = req.body;
-
-        // Get the budget to find expense name
-        const budget = db.prepare(`
-            SELECT * FROM budget_data
-            WHERE user_id = ? AND is_default = 1
-        `).get(userId);
-
-        if (!budget) {
-            return res.status(404).json({ error: 'No default budget found' });
-        }
-
-        const expenses = budget.expenses ? JSON.parse(budget.expenses) : [];
-        const expense = expenses.find(e => e.id === expenseId);
-
-        if (!expense) {
-            return res.status(404).json({ error: 'Expense not found' });
-        }
-
-        const paymentDate = new Date().toISOString().split('T')[0];
-        const actualDueDate = dueDate || paymentDate;
-        const amountDue = expense.amount;
-        const amountPaid = amount !== undefined ? amount : expense.amount;
-
-        // Check for duplicate payment (same expense + due date)
-        const existingPayment = db.prepare(`
-            SELECT id FROM payment_history
-            WHERE user_id = ? AND expense_id = ? AND due_date = ? AND payment_type != 'skipped'
-        `).get(userId, expenseId, actualDueDate);
-
-        if (existingPayment) {
-            return res.status(409).json({
-                error: 'Payment already recorded for this expense on this date',
-                existingPaymentId: existingPayment.id
-            });
-        }
-
-        // Deduct from sub-account balance
-        const currentBalance = expense.sub_account?.balance || 0;
-        const newBalance = currentBalance - amountPaid;
-
-        if (!expense.sub_account) {
-            expense.sub_account = { balance: 0 };
-        }
-        expense.sub_account.balance = newBalance;
-
-        // Save updated expenses back to database
-        db.prepare(`
-            UPDATE budget_data SET expenses = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-        `).run(JSON.stringify(expenses), budget.id);
-
-        const wentNegative = newBalance < 0 ? 1 : 0;
-
-        const result = db.prepare(`
-            INSERT INTO payment_history (
-                user_id, expense_id, expense_name, amount_due, amount_paid,
-                payment_date, due_date, payment_type, balance_before, balance_after,
-                went_negative, notes
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-            userId, expenseId, expense.description || expense.name, amountDue, amountPaid,
-            paymentDate, actualDueDate, paymentType, currentBalance, newBalance,
-            wentNegative, notes
-        );
-
-        res.json({
-            message: 'Payment recorded successfully',
-            paymentId: result.lastInsertRowid,
-            payment: {
-                id: result.lastInsertRowid,
-                expenseId,
-                expenseName: expense.description || expense.name,
-                amountDue,
-                amountPaid,
-                paymentDate,
-                dueDate: actualDueDate,
-                paymentType,
-                balanceBefore: currentBalance,
-                balanceAfter: newBalance,
-                wentNegative: wentNegative === 1
-            }
-        });
-    } catch (error) {
-        console.error('Record payment error:', error);
-        res.status(500).json({ error: 'Server error recording payment' });
-    }
-});
-
-// Skip a scheduled payment
-app.post('/api/expenses/:expenseId/skip', authenticateToken, (req, res) => {
-    try {
-        const userId = req.user.userId;
-        const { expenseId } = req.params;
-        const { dueDate, reason = '' } = req.body;
-
-        // Get the budget to find expense
-        const budget = db.prepare(`
-            SELECT * FROM budget_data
-            WHERE user_id = ? AND is_default = 1
-        `).get(userId);
-
-        if (!budget) {
-            return res.status(404).json({ error: 'No default budget found' });
-        }
-
-        const expenses = budget.expenses ? JSON.parse(budget.expenses) : [];
-        const expense = expenses.find(e => e.id === expenseId);
-
-        if (!expense) {
-            return res.status(404).json({ error: 'Expense not found' });
-        }
-
-        const paymentDate = new Date().toISOString().split('T')[0];
-        const actualDueDate = dueDate || paymentDate;
-        const balanceBefore = expense.sub_account?.balance || 0;
-
-        const result = db.prepare(`
-            INSERT INTO payment_history (
-                user_id, expense_id, expense_name, amount_due, amount_paid,
-                payment_date, due_date, payment_type, balance_before, balance_after,
-                went_negative, notes
-            ) VALUES (?, ?, ?, ?, 0, ?, ?, 'skipped', ?, ?, 0, ?)
-        `).run(
-            userId, expenseId, expense.description || expense.name, expense.amount,
-            paymentDate, actualDueDate, balanceBefore, balanceBefore, reason
-        );
-
-        res.json({
-            message: 'Payment skipped',
-            paymentId: result.lastInsertRowid
-        });
-    } catch (error) {
-        console.error('Skip payment error:', error);
-        res.status(500).json({ error: 'Server error skipping payment' });
-    }
-});
-
-// Helper function to get Monday of a week
-function getMonday(date) {
-    const d = new Date(date);
-    const day = d.getDay();
-    const diff = d.getDate() - day + (day === 0 ? -6 : 1);
-    return new Date(d.setDate(diff));
-}
-
-// Helper function to convert expense to weekly amount
-function getWeeklyAmount(expense) {
-    const amount = parseFloat(expense.amount) || 0;
-    switch (expense.frequency || expense.period) {
-        case 'weekly': return amount;
-        case 'fortnightly': return amount / 2;
-        case 'monthly': return amount / 4.33;
-        case 'annually':
-        case 'annual': return amount / 52;
-        case 'one-off':
-            if (expense.date) {
-                const weeksUntil = Math.max(1, Math.ceil((new Date(expense.date) - new Date()) / (7 * 24 * 60 * 60 * 1000)));
-                return amount / weeksUntil;
-            }
-            return amount / 52;
-        default: return amount;
-    }
-}
-
-// Helper to get day of month from expense (uses dueDate if set, otherwise extracts from date field)
-function getDueDayOfMonth(expense) {
-    if (expense.dueDate !== undefined) return expense.dueDate;
-    if (expense.date) {
-        const d = new Date(expense.date);
-        return d.getDate();
-    }
-    return 1; // Default to 1st of month
-}
-
-// Helper function to calculate next due date for an expense from a given date
-function calculateNextDueDateForExpense(expense, fromDate = new Date()) {
-    const from = new Date(fromDate);
-    const frequency = expense.frequency || expense.period || 'weekly';
-    // Check both dueDay (new) and dayOfWeek (legacy) for backwards compatibility
-    const dueDay = expense.dueDay !== undefined && expense.dueDay !== null
-        ? expense.dueDay
-        : (expense.dayOfWeek !== undefined && expense.dayOfWeek !== null ? expense.dayOfWeek : 1);
-    const dueDateOfMonth = getDueDayOfMonth(expense);
-
-    switch (frequency) {
-        case 'weekly': {
-            const result = new Date(from);
-            const currentDay = result.getDay();
-            let daysUntil = dueDay - currentDay;
-            if (daysUntil <= 0) daysUntil += 7;
-            result.setDate(result.getDate() + daysUntil);
-            return result;
-        }
-        case 'fortnightly': {
-            const result = new Date(from);
-            const currentDay = result.getDay();
-            let daysUntil = dueDay - currentDay;
-            if (daysUntil <= 0) daysUntil += 7;
-            result.setDate(result.getDate() + daysUntil);
-            return result;
-        }
-        case 'monthly': {
-            const result = new Date(from);
-            result.setDate(dueDateOfMonth);
-            if (result <= from) {
-                result.setMonth(result.getMonth() + 1);
-            }
-            return result;
-        }
-        case 'annually':
-        case 'annual':
-        case 'one-off':
-            if (expense.date) {
-                const targetDate = new Date(expense.date);
-                if (targetDate > from) return targetDate;
-            }
-            return null;
-        default:
-            return null;
-    }
-}
-
-// Helper function to calculate due dates between two dates
-function calculateDueDatesBetween(expense, startDate, endDate) {
-    const dueDates = [];
-    const start = new Date(startDate);
-    const end = new Date(endDate);
-
-    // Default due day is Monday (1) for weekly/fortnightly
-    // Check both dueDay (new) and dayOfWeek (legacy) for backwards compatibility
-    const dueDay = expense.dueDay !== undefined && expense.dueDay !== null
-        ? expense.dueDay
-        : (expense.dayOfWeek !== undefined && expense.dayOfWeek !== null ? expense.dayOfWeek : 1);
-    const dueDateOfMonth = getDueDayOfMonth(expense);
-
-    const frequency = expense.frequency || expense.period;
-
-    if (frequency === 'weekly') {
-        let current = getNextDayOfWeek(start, dueDay);
-        while (current <= end) {
-            dueDates.push(new Date(current));
-            current.setDate(current.getDate() + 7);
-        }
-    } else if (frequency === 'fortnightly') {
-        let current = getNextDayOfWeek(start, dueDay);
-        while (current <= end) {
-            dueDates.push(new Date(current));
-            current.setDate(current.getDate() + 14);
-        }
-    } else if (frequency === 'monthly') {
-        let current = new Date(start);
-        current.setDate(dueDateOfMonth);
-        if (current <= start) {
-            current.setMonth(current.getMonth() + 1);
-        }
-        while (current <= end) {
-            dueDates.push(new Date(current));
-            current.setMonth(current.getMonth() + 1);
-        }
-    } else if (frequency === 'annually' || frequency === 'annual') {
-        if (expense.date) {
-            const annualDate = new Date(expense.date);
-            // Check if the annual date falls within range
-            let checkDate = new Date(annualDate);
-            checkDate.setFullYear(start.getFullYear());
-            if (checkDate < start) {
-                checkDate.setFullYear(checkDate.getFullYear() + 1);
-            }
-            if (checkDate <= end) {
-                dueDates.push(checkDate);
-            }
-        }
-    } else if (frequency === 'one-off') {
-        if (expense.date) {
-            const oneOffDate = new Date(expense.date);
-            if (oneOffDate > start && oneOffDate <= end) {
-                dueDates.push(oneOffDate);
-            }
-        }
-    }
-
-    return dueDates;
-}
-
-// Helper function to get next occurrence of a day of week
-function getNextDayOfWeek(fromDate, targetDay) {
-    const result = new Date(fromDate);
-    const currentDay = result.getDay();
-    let daysUntil = targetDay - currentDay;
-    if (daysUntil < 0) {
-        daysUntil += 7;
-    }
-    result.setDate(result.getDate() + daysUntil);
-    return result;
-}
-
 // Health check
 app.get('/api/health', (req, res) => {
     res.json({ status: 'ok', message: 'NZ Budget Calculator API is running' });
 });
+
+// ============================================
+// AUTOMATIC PAYMENT SCHEDULER
+// ============================================
+
+// Scheduler configuration
+const SCHEDULER_ENABLED = process.env.AUTO_SCHEDULER_ENABLED !== 'false'; // Enabled by default
+const SCHEDULER_CRON = process.env.AUTO_SCHEDULER_CRON || '0 5 * * *'; // 5:00 AM daily
+
+/**
+ * Structured logger for scheduler operations
+ */
+function schedulerLog(level, message, context = {}) {
+    const timestamp = new Date().toISOString();
+    const logEntry = {
+        component: 'SCHEDULER',
+        level,
+        timestamp,
+        message,
+        ...context
+    };
+
+    if (level === 'ERROR') {
+        console.error(JSON.stringify(logEntry));
+    } else {
+        console.log(JSON.stringify(logEntry));
+    }
+}
+
+/**
+ * Main scheduler job - processes all automatic payments for all users
+ * @param {boolean} exactDateOnly - If true, only process items due on exact date (normal run)
+ *                                  If false, process all past-due items (catch-up mode)
+ */
+function runScheduledPaymentProcessing(exactDateOnly = true) {
+    const todayStr = formatDateLocal(new Date());
+    const startedAt = new Date().toISOString();
+    const isCatchup = !exactDateOnly;
+
+    schedulerLog('INFO', `Starting scheduled payment processing${isCatchup ? ' (CATCH-UP MODE)' : ''}`, { date: todayStr });
+
+    // Create scheduler run record
+    const runRecord = db.prepare(`
+        INSERT INTO scheduler_runs (run_date, started_at, status, is_catchup)
+        VALUES (?, ?, 'running', ?)
+    `).run(todayStr, startedAt, isCatchup ? 1 : 0);
+    const runId = runRecord.lastInsertRowid;
+
+    let totalUsersProcessed = 0;
+    let totalExpensesProcessed = 0;
+    let totalTransfersProcessed = 0;
+    let totalTransfersGenerated = 0;
+    let totalErrors = 0;
+    const allErrors = [];
+
+    try {
+        // Get all users
+        const users = db.prepare('SELECT id, username FROM users').all();
+
+        schedulerLog('INFO', `Processing ${users.length} users`);
+
+        for (const user of users) {
+            try {
+                // Check if user has automation enabled (create if doesn't exist)
+                let automationState = db.prepare(
+                    'SELECT * FROM automation_state WHERE user_id = ?'
+                ).get(user.id);
+
+                if (!automationState) {
+                    db.prepare(`
+                        INSERT INTO automation_state (user_id, auto_transfer_enabled, auto_expense_enabled)
+                        VALUES (?, 1, 1)
+                    `).run(user.id);
+                    automationState = { auto_expense_enabled: 1, auto_transfer_enabled: 1 };
+                }
+
+                let userExpensesProcessed = 0;
+                let userTransfersProcessed = 0;
+                let userTransfersGenerated = 0;
+
+                // Generate future transfers for this user (30 days ahead)
+                if (automationState.auto_transfer_enabled) {
+                    const generated = generateTransfersFromSchedules(user.id, 30);
+                    userTransfersGenerated = generated;
+                    totalTransfersGenerated += generated;
+                }
+
+                // Process automatic expenses if enabled
+                if (automationState.auto_expense_enabled) {
+                    const expenseResult = processAutomaticExpensesForUser(user.id, todayStr, exactDateOnly);
+                    userExpensesProcessed = expenseResult.processed.length;
+                    totalExpensesProcessed += userExpensesProcessed;
+
+                    if (expenseResult.errors.length > 0) {
+                        totalErrors += expenseResult.errors.length;
+                        allErrors.push(...expenseResult.errors.map(e => ({
+                            ...e,
+                            userId: user.id,
+                            type: 'expense'
+                        })));
+                    }
+                }
+
+                // Process scheduled transfers if enabled
+                if (automationState.auto_transfer_enabled) {
+                    const transferResult = processScheduledTransfersForUser(user.id, todayStr, exactDateOnly);
+                    userTransfersProcessed = transferResult.processed.length;
+                    totalTransfersProcessed += userTransfersProcessed;
+
+                    if (transferResult.errors.length > 0) {
+                        totalErrors += transferResult.errors.length;
+                        allErrors.push(...transferResult.errors.map(e => ({
+                            ...e,
+                            userId: user.id,
+                            type: 'transfer'
+                        })));
+                    }
+                }
+
+                // Update user's automation state
+                db.prepare(`
+                    UPDATE automation_state
+                    SET scheduler_last_run = datetime('now'), updated_at = CURRENT_TIMESTAMP
+                    WHERE user_id = ?
+                `).run(user.id);
+
+                if (userExpensesProcessed > 0 || userTransfersProcessed > 0 || userTransfersGenerated > 0) {
+                    schedulerLog('INFO', `Processed user`, {
+                        userId: user.id,
+                        username: user.username,
+                        expenses: userExpensesProcessed,
+                        transfers: userTransfersProcessed,
+                        transfersGenerated: userTransfersGenerated
+                    });
+                }
+
+                totalUsersProcessed++;
+
+            } catch (userError) {
+                schedulerLog('ERROR', 'Failed to process user', {
+                    userId: user.id,
+                    username: user.username,
+                    error: userError.message
+                });
+                totalErrors++;
+                allErrors.push({
+                    userId: user.id,
+                    type: 'user_processing',
+                    error: userError.message
+                });
+            }
+        }
+
+        // Update scheduler run record - success
+        db.prepare(`
+            UPDATE scheduler_runs
+            SET completed_at = datetime('now'),
+                status = 'completed',
+                users_processed = ?,
+                expenses_processed = ?,
+                transfers_processed = ?,
+                transfers_generated = ?,
+                errors_count = ?,
+                error_details = ?
+            WHERE id = ?
+        `).run(
+            totalUsersProcessed,
+            totalExpensesProcessed,
+            totalTransfersProcessed,
+            totalTransfersGenerated,
+            totalErrors,
+            allErrors.length > 0 ? JSON.stringify(allErrors) : null,
+            runId
+        );
+
+        schedulerLog('INFO', 'Scheduled payment processing completed', {
+            runId,
+            isCatchup,
+            usersProcessed: totalUsersProcessed,
+            expensesProcessed: totalExpensesProcessed,
+            transfersProcessed: totalTransfersProcessed,
+            transfersGenerated: totalTransfersGenerated,
+            errors: totalErrors
+        });
+
+    } catch (error) {
+        // Update scheduler run record - failed
+        db.prepare(`
+            UPDATE scheduler_runs
+            SET completed_at = datetime('now'),
+                status = 'failed',
+                users_processed = ?,
+                expenses_processed = ?,
+                transfers_processed = ?,
+                transfers_generated = ?,
+                errors_count = ?,
+                error_details = ?
+            WHERE id = ?
+        `).run(
+            totalUsersProcessed,
+            totalExpensesProcessed,
+            totalTransfersProcessed,
+            totalTransfersGenerated,
+            totalErrors + 1,
+            JSON.stringify([...allErrors, { type: 'fatal', error: error.message }]),
+            runId
+        );
+
+        schedulerLog('ERROR', 'Scheduled payment processing failed', {
+            runId,
+            error: error.message
+        });
+    }
+
+    return {
+        runId,
+        usersProcessed: totalUsersProcessed,
+        expensesProcessed: totalExpensesProcessed,
+        transfersProcessed: totalTransfersProcessed,
+        transfersGenerated: totalTransfersGenerated,
+        errors: totalErrors
+    };
+}
+
+/**
+ * Check for missed scheduler runs and process past-due items
+ */
+function checkForMissedRuns() {
+    try {
+        const todayStr = formatDateLocal(new Date());
+
+        // Get the most recent successful scheduler run
+        const lastRun = db.prepare(`
+            SELECT run_date FROM scheduler_runs
+            WHERE status = 'completed'
+            ORDER BY run_date DESC
+            LIMIT 1
+        `).get();
+
+        if (lastRun && lastRun.run_date < todayStr) {
+            schedulerLog('INFO', 'Detected missed scheduler runs, initiating catch-up', {
+                lastRunDate: lastRun.run_date,
+                today: todayStr
+            });
+
+            // Run in catch-up mode (process all past-due items)
+            runScheduledPaymentProcessing(false);
+        } else if (!lastRun) {
+            // No previous runs - check if there are any past-due items
+            const hasPastDue = db.prepare(`
+                SELECT 1 FROM recurring_expenses
+                WHERE is_active = 1 AND payment_mode = 'automatic' AND next_due_date < ?
+                LIMIT 1
+            `).get(todayStr);
+
+            if (hasPastDue) {
+                schedulerLog('INFO', 'No previous scheduler runs found, processing past-due items');
+                runScheduledPaymentProcessing(false);
+            }
+        }
+    } catch (error) {
+        schedulerLog('ERROR', 'Error checking for missed runs', { error: error.message });
+    }
+}
+
+// ============================================
+// SCHEDULER ADMIN ENDPOINTS
+// ============================================
+
+// Get scheduler status and recent runs
+app.get('/api/admin/scheduler/status', authenticateToken, (req, res) => {
+    try {
+        const recentRuns = db.prepare(`
+            SELECT * FROM scheduler_runs
+            ORDER BY started_at DESC
+            LIMIT 10
+        `).all();
+
+        res.json({
+            enabled: SCHEDULER_ENABLED,
+            schedule: SCHEDULER_CRON,
+            timezone: 'Pacific/Auckland',
+            recentRuns: recentRuns.map(run => ({
+                ...run,
+                error_details: run.error_details ? JSON.parse(run.error_details) : null
+            }))
+        });
+    } catch (error) {
+        console.error('Get scheduler status error:', error);
+        res.status(500).json({ error: 'Server error fetching scheduler status' });
+    }
+});
+
+// Manually trigger scheduler (for testing/recovery)
+app.post('/api/admin/scheduler/run', authenticateToken, (req, res) => {
+    try {
+        const { catchup = false } = req.body || {};
+
+        schedulerLog('INFO', 'Manual scheduler run triggered', {
+            triggeredBy: req.user.userId,
+            catchupMode: catchup
+        });
+
+        // Run asynchronously so we can return immediately
+        setImmediate(() => {
+            runScheduledPaymentProcessing(!catchup);
+        });
+
+        res.json({
+            message: 'Scheduler run triggered',
+            catchupMode: catchup,
+            note: 'Check /api/admin/scheduler/status for results'
+        });
+    } catch (error) {
+        console.error('Trigger scheduler error:', error);
+        res.status(500).json({ error: 'Server error triggering scheduler' });
+    }
+});
+
+// Get user automation settings
+app.get('/api/automation/settings', authenticateToken, (req, res) => {
+    try {
+        const userId = req.user.userId;
+
+        let settings = db.prepare(
+            'SELECT * FROM automation_state WHERE user_id = ?'
+        ).get(userId);
+
+        if (!settings) {
+            // Create default settings
+            db.prepare(`
+                INSERT INTO automation_state (user_id, auto_transfer_enabled, auto_expense_enabled)
+                VALUES (?, 1, 1)
+            `).run(userId);
+            settings = {
+                auto_transfer_enabled: 1,
+                auto_expense_enabled: 1,
+                scheduler_last_run: null
+            };
+        }
+
+        res.json({
+            autoExpenseEnabled: settings.auto_expense_enabled === 1,
+            autoTransferEnabled: settings.auto_transfer_enabled === 1,
+            lastSchedulerRun: settings.scheduler_last_run
+        });
+    } catch (error) {
+        console.error('Get automation settings error:', error);
+        res.status(500).json({ error: 'Server error fetching automation settings' });
+    }
+});
+
+// Update user automation settings
+app.put('/api/automation/settings', authenticateToken, (req, res) => {
+    try {
+        const userId = req.user.userId;
+        const { autoExpenseEnabled, autoTransferEnabled } = req.body;
+
+        // Ensure automation_state exists
+        db.prepare(`
+            INSERT OR IGNORE INTO automation_state (user_id) VALUES (?)
+        `).run(userId);
+
+        // Update settings
+        if (autoExpenseEnabled !== undefined) {
+            db.prepare(
+                'UPDATE automation_state SET auto_expense_enabled = ? WHERE user_id = ?'
+            ).run(autoExpenseEnabled ? 1 : 0, userId);
+        }
+
+        if (autoTransferEnabled !== undefined) {
+            db.prepare(
+                'UPDATE automation_state SET auto_transfer_enabled = ? WHERE user_id = ?'
+            ).run(autoTransferEnabled ? 1 : 0, userId);
+        }
+
+        res.json({ message: 'Automation settings updated' });
+    } catch (error) {
+        console.error('Update automation settings error:', error);
+        res.status(500).json({ error: 'Server error updating automation settings' });
+    }
+});
+
+// ============================================
+// SCHEDULER INITIALIZATION
+// ============================================
+
+// Initialize the scheduler
+if (SCHEDULER_ENABLED) {
+    // Validate cron expression
+    if (cron.validate(SCHEDULER_CRON)) {
+        cron.schedule(SCHEDULER_CRON, () => {
+            runScheduledPaymentProcessing(true); // exactDateOnly = true for normal runs
+        }, {
+            timezone: 'Pacific/Auckland'
+        });
+
+        console.log(`[SCHEDULER] Automatic payment scheduler initialized`);
+        console.log(`[SCHEDULER] Schedule: ${SCHEDULER_CRON} (Pacific/Auckland timezone)`);
+        console.log(`[SCHEDULER] Next run will process payments due on that exact date only`);
+    } else {
+        console.error(`[SCHEDULER] Invalid cron expression: ${SCHEDULER_CRON}`);
+    }
+} else {
+    console.log('[SCHEDULER] Automatic payment scheduler is DISABLED');
+}
+
+// Check for missed runs on startup (after a short delay to let the server fully initialize)
+setTimeout(() => {
+    checkForMissedRuns();
+}, 5000);
 
 // Start server
 app.listen(PORT, () => {

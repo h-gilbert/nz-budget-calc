@@ -1,66 +1,41 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import Home from '@/views/Home.vue'
-import Calculator from '@/views/Calculator.vue'
-import Dashboard from '@/views/Dashboard.vue'
-import MoneyManagement from '@/views/MoneyManagement.vue'
-import Transactions from '@/views/Transactions.vue'
 
 const routes = [
   {
     path: '/',
-    name: 'Home',
-    component: Home
+    name: 'Landing',
+    component: () => import('@/views/LandingPage.vue')
   },
   {
-    path: '/calculator',
-    name: 'Calculator',
-    component: Calculator
+    path: '/setup',
+    name: 'Setup',
+    component: () => import('@/views/SetupPage.vue')
   },
   {
     path: '/dashboard',
     name: 'Dashboard',
-    component: Dashboard
-  },
-  {
-    path: '/money',
-    name: 'MoneyManagement',
-    component: MoneyManagement,
-    meta: { title: 'Money Management' }
+    component: () => import('@/views/Dashboard.vue')
   },
   {
     path: '/transactions',
     name: 'Transactions',
-    component: Transactions
+    component: () => import('@/views/TransactionsPage.vue')
   },
-
-  // Backwards-compatible redirects for old routes
+  // Backwards-compatible redirects
   {
-    path: '/accounts',
-    redirect: { name: 'MoneyManagement', query: { tab: 'accounts' } }
-  },
-  {
-    path: '/planning',
-    redirect: { name: 'MoneyManagement', query: { tab: 'planning' } }
+    path: '/calculator',
+    redirect: '/setup'
   },
   {
-    path: '/automation',
-    redirect: { name: 'MoneyManagement', query: { tab: 'automation' } }
-  },
-  {
-    path: '/goals',
-    redirect: { name: 'MoneyManagement', query: { tab: 'goals' } }
+    path: '/home',
+    redirect: '/'
   }
 ]
 
 const router = createRouter({
   history: createWebHistory(),
   routes,
-  scrollBehavior(to, from, savedPosition) {
-    // Scroll to top when changing routes
-    // But preserve scroll when changing tabs within MoneyManagement
-    if (to.name === 'MoneyManagement' && from.name === 'MoneyManagement') {
-      return savedPosition || { top: 0 }
-    }
+  scrollBehavior() {
     return { top: 0 }
   }
 })

@@ -1,6 +1,9 @@
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
-import { transferAPI, automationAPI, paymentAPI } from '@/api/client'
+import { ref, computed, watch } from 'vue'
+import { budgetAPI, transactionAPI, transferAPI } from '@/api/client'
+
+// localStorage key for persisting budget data before login
+const LOCAL_STORAGE_KEY = 'nz-budget-calculator-data'
 
 // Helper function to format date as YYYY-MM-DD in local time (not UTC)
 function formatDateLocal(date) {
@@ -8,6 +11,17 @@ function formatDateLocal(date) {
   const month = String(date.getMonth() + 1).padStart(2, '0')
   const day = String(date.getDate()).padStart(2, '0')
   return `${year}-${month}-${day}`
+}
+
+// Helper function to parse YYYY-MM-DD string to local midnight (not UTC)
+// new Date('2025-01-15') creates UTC midnight which shifts the date in NZ timezone
+// This function creates local midnight instead
+function parseDateLocal(dateStr) {
+  if (!dateStr) return null
+  const [year, month, day] = dateStr.split('-').map(Number)
+  const d = new Date(year, month - 1, day)
+  d.setHours(0, 0, 0, 0)
+  return d
 }
 
 // Helper function to get next Monday's date
@@ -42,7 +56,8 @@ export const useBudgetStore = defineStore('budget', () => {
   const setAsDefault = ref(false)
 
   // Income
-  const payType = ref('weekly')
+  const incomeMode = ref('gross') // 'gross' or 'net' - whether user is entering pre-tax or post-tax amount
+  const payType = ref('annually') // Period: weekly, fortnightly, monthly, annually
   const payAmount = ref(0)
   const hoursType = ref('fixed')
   const fixedHours = ref(40)
@@ -60,10 +75,6 @@ export const useBudgetStore = defineStore('budget', () => {
   // Expenses
   const expenses = ref([])
   const expenseCount = ref(0)
-
-  // Expense Groups (for visual organization)
-  const expenseGroups = ref([])
-  const expenseGroupCount = ref(0)
 
   // Accounts
   const accounts = ref([])
@@ -85,21 +96,14 @@ export const useBudgetStore = defineStore('budget', () => {
   const results = ref(null)
   const hasCalculated = ref(false)
 
-  // Automation state
-  const automationState = ref({
-    lastTransferDate: null,
-    lastExpenseCheckDate: null,
-    autoTransferEnabled: true,
-    autoExpenseEnabled: true
-  })
-
-  const pendingActions = ref({
-    transfer: null,
-    expenses: [],
-    hasActions: false
-  })
-
   const recentPayments = ref([])
+
+  // Transaction state
+  const transactions = ref([])
+  const transactionsTotal = ref(0)
+  const upcomingItems = ref([])
+  const budgetSummary = ref({ summaries: [], total_budget: 0, total_actual: 0, total_variance: 0 })
+  const transactionsLoading = ref(false)
 
   // Helper function to calculate weeks until a date
   function weeksUntilDate(dateStr) {
@@ -184,91 +188,25 @@ export const useBudgetStore = defineStore('budget', () => {
     return income >= 24000 && income <= 70000
   })
 
-  // Group expenses by groupId for display
-  const groupedExpenses = computed(() => {
-    const grouped = {}
-
-    // Initialize groups from expenseGroups
-    for (const group of expenseGroups.value) {
-      grouped[group.id] = {
-        ...group,
-        expenses: [],
-        totalBalance: 0,
-        totalWeekly: 0
-      }
-    }
-
-    // Add ungrouped category
-    grouped['ungrouped'] = {
-      id: 'ungrouped',
-      name: 'Other / Ungrouped',
-      color: '#9E9E9E',
-      order: 999,
-      expenses: [],
-      totalBalance: 0,
-      totalWeekly: 0
-    }
-
-    // Sort expenses into groups
-    for (const expense of expenses.value) {
-      const groupId = expense.groupId || 'ungrouped'
-      if (grouped[groupId]) {
-        grouped[groupId].expenses.push(expense)
-        grouped[groupId].totalBalance += expense.sub_account?.balance || 0
-        grouped[groupId].totalWeekly += getWeeklyAmount(expense)
-      } else {
-        // Group was deleted, put in ungrouped
-        grouped['ungrouped'].expenses.push(expense)
-        grouped['ungrouped'].totalBalance += expense.sub_account?.balance || 0
-        grouped['ungrouped'].totalWeekly += getWeeklyAmount(expense)
-      }
-    }
-
-    // Convert to sorted array, only include groups with expenses or defined groups
-    return Object.values(grouped)
-      .filter(g => g.expenses.length > 0 || g.id !== 'ungrouped')
-      .sort((a, b) => a.order - b.order)
-  })
-
-  // Get a flat list of group options for dropdown
-  const groupOptions = computed(() => {
-    return [
-      { id: null, name: '(No Group)' },
-      ...expenseGroups.value.map(g => ({ id: g.id, name: g.name }))
-    ]
-  })
-
   // Actions
   function addExpense() {
     expenseCount.value++
     const expenseId = `expense-${expenseCount.value}`
 
-    // Create the expense with embedded virtual sub_account
+    // Create the expense with accountId link
     const newExpense = {
       id: expenseId,
       name: '',
       amount: 0,
       frequency: 'weekly',
-      sub_account: {
-        balance: 0
-      }
+      dueDay: 1, // Monday for weekly, 1st for monthly
+      dueDate: null, // For annual/one-off/fortnightly reference
+      accountId: null // Link to account that pays this expense
     }
     expenses.value.unshift(newExpense)
   }
 
   function removeExpense(id) {
-    const expense = expenses.value.find(e => e.id === id)
-    if (!expense) return
-
-    // Return any allocated balance back to the expense account
-    if (expense.sub_account && expense.sub_account.balance > 0) {
-      const expenseAccount = accounts.value.find(a => a.isExpenseAccount)
-      if (expenseAccount) {
-        expenseAccount.balance = (expenseAccount.balance || 0) + expense.sub_account.balance
-      }
-    }
-
-    // Remove the expense (virtual sub_account is automatically removed with it)
     const index = expenses.value.findIndex(e => e.id === id)
     if (index > -1) {
       expenses.value.splice(index, 1)
@@ -284,377 +222,29 @@ export const useBudgetStore = defineStore('budget', () => {
       } else {
         expense[field] = value
       }
-      // Virtual sub_account is embedded - name updates automatically with expense.name
     }
   }
 
-  // Update sub_account balance for a specific expense
-  function updateExpenseSubAccountBalance(expenseId, balance) {
-    const expense = expenses.value.find(e => e.id === expenseId)
-    if (expense && expense.sub_account) {
-      expense.sub_account.balance = parseFloat(balance) || 0
-    }
+  // Get weekly load for a specific account (sum of linked expenses)
+  function getAccountWeeklyLoad(accountId) {
+    return expenses.value
+      .filter(e => e.accountId === accountId)
+      .reduce((sum, e) => sum + getWeeklyAmount(e), 0)
   }
 
-  // ============================================
-  // EXPENSE GROUP ACTIONS
-  // ============================================
-
-  // Add a new expense group
-  function addExpenseGroup(name = '', color = '#4CAF50') {
-    expenseGroupCount.value++
-    const newGroup = {
-      id: `group-${Date.now()}-${expenseGroupCount.value}`,
-      name,
-      color,
-      order: expenseGroups.value.length + 1
-    }
-    expenseGroups.value.push(newGroup)
-    return newGroup
-  }
-
-  // Update an expense group
-  function updateExpenseGroup(groupId, updates) {
-    const group = expenseGroups.value.find(g => g.id === groupId)
-    if (group) {
-      Object.assign(group, updates)
-    }
-  }
-
-  // Remove an expense group (moves expenses to ungrouped)
-  function removeExpenseGroup(groupId) {
-    // Unassign all expenses from this group
-    expenses.value.forEach(expense => {
-      if (expense.groupId === groupId) {
-        expense.groupId = null
-      }
-    })
-
-    // Remove the group
-    const index = expenseGroups.value.findIndex(g => g.id === groupId)
-    if (index > -1) {
-      expenseGroups.value.splice(index, 1)
-    }
-  }
-
-  // Assign expense to group
-  function assignExpenseToGroup(expenseId, groupId) {
-    const expense = expenses.value.find(e => e.id === expenseId)
-    if (expense) {
-      expense.groupId = groupId || null // null for ungrouped
-    }
-  }
-
-  // Reorder expense groups
-  function reorderExpenseGroups(newOrder) {
-    expenseGroups.value = newOrder.map((id, index) => {
-      const group = expenseGroups.value.find(g => g.id === id)
-      return { ...group, order: index + 1 }
-    })
-  }
-
-  // Allocate money from expense account to an expense's sub_account
-  function allocateToExpense(expenseId, amount) {
-    const expense = expenses.value.find(e => e.id === expenseId)
-    const expenseAccount = accounts.value.find(a => a.isExpenseAccount)
-
-    if (!expense || !expenseAccount || !expense.sub_account) return false
-
-    const allocateAmount = parseFloat(amount) || 0
-    if (allocateAmount <= 0) return false
-    if (expenseAccount.balance < allocateAmount) return false
-
-    expenseAccount.balance -= allocateAmount
-    expense.sub_account.balance += allocateAmount
-    return true
-  }
-
-  // Deallocate money from expense's sub_account back to expense account
-  function deallocateFromExpense(expenseId, amount) {
-    const expense = expenses.value.find(e => e.id === expenseId)
-    const expenseAccount = accounts.value.find(a => a.isExpenseAccount)
-
-    if (!expense || !expenseAccount || !expense.sub_account) return false
-
-    const deallocateAmount = parseFloat(amount) || 0
-    if (deallocateAmount <= 0) return false
-    if (expense.sub_account.balance < deallocateAmount) return false
-
-    expense.sub_account.balance -= deallocateAmount
-    expenseAccount.balance += deallocateAmount
-    return true
-  }
-
-  // Calculate target balance for an expense's sub-account
-  // This is how much should ideally be in the sub-account to cover the next occurrence
-  function calculateTargetBalance(expense) {
-    const amount = parseFloat(expense.amount) || 0
-    const frequency = expense.frequency || 'weekly'
-
-    if (frequency === 'weekly') {
-      // Weekly expenses: need 1 week's worth
-      return amount
-    } else if (frequency === 'fortnightly') {
-      // Fortnightly: need 2 weeks' worth
-      return amount
-    } else if (frequency === 'monthly') {
-      // Monthly: need full monthly amount
-      return amount
-    } else if (frequency === 'annually') {
-      // Annual: need full annual amount
-      return amount
-    } else if (frequency === 'one-off') {
-      // One-off: need full amount
-      return amount
-    }
-    return amount
-  }
-
-  // Calculate how much to allocate to an expense this week
-  // Returns 0 if overfunded, otherwise returns the weekly portion needed
-  function calculateWeeklyAllocation(expense) {
-    const currentBalance = parseFloat(expense.sub_account?.balance) || 0
-    const targetBalance = calculateTargetBalance(expense)
-    const weeklyNeed = getWeeklyAmount(expense)
-
-    // If already at or above target, skip allocation (overfunded)
-    if (currentBalance >= targetBalance) {
-      return 0
-    }
-
-    // Calculate deficit
-    const deficit = targetBalance - currentBalance
-
-    // Only allocate up to the deficit or the weekly need, whichever is smaller
-    return Math.min(weeklyNeed, deficit)
-  }
-
-  // Calculate the weekly allocation needed to reach target 1 week BEFORE due date
-  // This ensures funds are ready ahead of time for scheduled expenses
-  // Returns at minimum the equilibrium amount, but MORE if behind schedule on a dated expense
-  function calculateTargetDateAwareWeeklyNeed(expense) {
-    const currentBalance = parseFloat(expense.sub_account?.balance) || 0
-    const targetBalance = calculateTargetBalance(expense)
-    const frequency = expense.frequency || 'weekly'
-    const equilibriumAmount = getWeeklyAmount(expense)
-
-    // For weekly expenses, always return equilibrium - they're always "due"
-    if (frequency === 'weekly') {
-      return equilibriumAmount
-    }
-
-    // For fortnightly, always return equilibrium
-    if (frequency === 'fortnightly') {
-      return equilibriumAmount
-    }
-
-    // For expenses with specific due dates (monthly, annually, one-off)
-    if (expense.date && (frequency === 'annually' || frequency === 'monthly' || frequency === 'one-off')) {
-      const today = new Date()
-      today.setHours(0, 0, 0, 0)
-
-      // Parse the due date
-      let dueDate = new Date(expense.date)
-      dueDate.setHours(0, 0, 0, 0)
-
-      // For monthly recurring expenses, find the NEXT occurrence
-      if (frequency === 'monthly') {
-        // If the due date has passed this month, move to next month
-        if (dueDate <= today) {
-          dueDate = new Date(today.getFullYear(), today.getMonth() + 1, dueDate.getDate())
-        }
-        // If still in the past (e.g., day already passed this month), go to next month
-        if (dueDate <= today) {
-          dueDate.setMonth(dueDate.getMonth() + 1)
-        }
-      }
-
-      // For annual expenses, if the date has passed this year, it's next year
-      if (frequency === 'annually' && dueDate <= today) {
-        dueDate.setFullYear(dueDate.getFullYear() + 1)
-      }
-
-      // Target: 1 week (7 days) before due date
-      const targetDate = new Date(dueDate)
-      targetDate.setDate(targetDate.getDate() - 7)
-
-      // Calculate weeks until target date
-      const diffTime = targetDate - today
-      const diffWeeks = Math.ceil(diffTime / (7 * 24 * 60 * 60 * 1000))
-      const weeksRemaining = Math.max(1, diffWeeks) // At least 1 week
-
-      // Calculate deficit (can be negative if overfunded)
-      const deficit = targetBalance - currentBalance
-
-      // If underfunded, calculate catch-up amount needed
-      if (deficit > 0) {
-        const requiredWeeklyAllocation = deficit / weeksRemaining
-        // Return the HIGHER of catch-up or equilibrium (urgency boost)
-        return Math.max(requiredWeeklyAllocation, equilibriumAmount)
-      }
-
-      // If at or above target, still return equilibrium to maintain buffer
-      return equilibriumAmount
-    }
-
-    // Default: fall back to equilibrium-based allocation
-    return equilibriumAmount
-  }
-
-  // Auto-allocate a transfer amount across all expense sub-accounts
-  // Uses TARGET-DATE-AWARE allocation to ensure expenses are funded 1 week before due
-  // Distributes proportionally based on deadline-adjusted weekly needs
-  function autoAllocateTransfer(transferAmount) {
-    const expenseAccount = accounts.value.find(a => a.isExpenseAccount)
-    if (!expenseAccount) {
-      return { success: false, error: 'No expense account found', allocations: [] }
-    }
-
-    const amount = parseFloat(transferAmount) || 0
-    if (amount <= 0) {
-      return { success: false, error: 'Invalid transfer amount', allocations: [] }
-    }
-
-    // Calculate total weekly need using TARGET-DATE-AWARE allocation
-    // This ensures expenses approaching their due date get priority funding
-    let totalWeeklyNeed = 0
-    const expenseData = []
-
-    for (const expense of expenses.value) {
-      // Use target-date-aware calculation instead of simple equilibrium
-      const targetDateAwareNeed = calculateTargetDateAwareWeeklyNeed(expense)
-      const equilibriumNeed = getWeeklyAmount(expense)
-
-      // Use the higher of target-date-aware or equilibrium (ensures we never under-allocate)
-      const weeklyNeed = Math.max(targetDateAwareNeed, equilibriumNeed)
-
-      if (weeklyNeed > 0) {
-        expenseData.push({
-          expense,
-          expenseId: expense.id,
-          expenseName: expense.description || expense.name,
-          groupId: expense.groupId || 'ungrouped',
-          weeklyNeed,
-          targetDateAwareNeed,
-          equilibriumNeed,
-          currentBalance: expense.sub_account?.balance || 0,
-          targetBalance: calculateTargetBalance(expense),
-          allocated: 0
-        })
-        totalWeeklyNeed += weeklyNeed
-      }
-    }
-
-    // If no expenses with needs, all goes to unallocated
-    if (totalWeeklyNeed === 0) {
-      expenseAccount.balance += amount
-      return {
-        success: true,
-        allocations: [],
-        unallocated: amount,
-        message: 'No expenses to allocate to'
-      }
-    }
-
-    // Distribute transfer proportionally based on target-date-aware weekly needs
-    // This gives higher priority to expenses approaching their due dates
-    const allocations = []
-    let totalAllocated = 0
-
-    for (let i = 0; i < expenseData.length; i++) {
-      const data = expenseData[i]
-
-      // Calculate proportional share (last expense gets remainder to avoid rounding issues)
-      let allocation
-      if (i === expenseData.length - 1) {
-        allocation = amount - totalAllocated
-      } else {
-        allocation = Math.floor((data.weeklyNeed / totalWeeklyNeed) * amount * 100) / 100
-      }
-
-      // No cap - allow allocations beyond target to build "week ahead" buffer
-      // Previously capped at deficit, but users need up to 2x target for week-ahead funding
-      data.allocated = allocation
-
-      // Apply allocation to expense sub-account
-      if (data.expense && data.expense.sub_account) {
-        data.expense.sub_account.balance += allocation
-        totalAllocated += allocation
-      }
-
-      // Add to allocations array for return value
-      allocations.push({
-        expenseId: data.expenseId,
-        expenseName: data.expenseName,
-        groupId: data.groupId,
-        needed: data.weeklyNeed,
-        targetDateAwareNeed: data.targetDateAwareNeed,
-        equilibriumNeed: data.equilibriumNeed,
-        currentBalance: data.currentBalance,
-        targetBalance: data.targetBalance,
-        allocated: data.allocated
-      })
-    }
-
-    // Any remaining unallocated funds go to the expense account buffer
-    const unallocated = amount - totalAllocated
-    if (unallocated > 0) {
-      expenseAccount.balance += unallocated
-    }
-
-    return {
-      success: true,
-      allocations,
-      totalAllocated,
-      unallocated,
-      totalNeeded: totalWeeklyNeed,
-      message: 'Funds distributed using target-date-aware allocation (1 week early)'
-    }
-  }
-
-  // Calculate effective equilibrium using target-date-aware allocation
-  // This accounts for both overfunded accounts AND upcoming deadlines
-  function calculateEffectiveEquilibrium() {
-    let effectiveTotal = 0
-    for (const expense of expenses.value) {
-      const targetDateAwareNeed = calculateTargetDateAwareWeeklyNeed(expense)
-      const equilibriumNeed = getWeeklyAmount(expense)
-      // Use the higher of target-date-aware or equilibrium
-      effectiveTotal += Math.max(targetDateAwareNeed, equilibriumNeed)
-    }
-    return effectiveTotal
-  }
-
-  // Calculate the target-date-aware equilibrium (sum of all deadline-adjusted needs)
-  // This is the minimum transfer needed to ensure all expenses are funded 1 week early
-  function calculateTargetDateAwareEquilibrium() {
-    let total = 0
-    for (const expense of expenses.value) {
-      const targetDateAwareNeed = calculateTargetDateAwareWeeklyNeed(expense)
-      const equilibriumNeed = getWeeklyAmount(expense)
-      total += Math.max(targetDateAwareNeed, equilibriumNeed)
-    }
-    return total
+  // Get expenses linked to a specific account
+  function getExpensesForAccount(accountId) {
+    return expenses.value.filter(e => e.accountId === accountId)
   }
 
   function addAccount() {
     accountCount.value++
-    // Get next Monday's date as default start date
-    const nextMondayDate = getNextMonday()
     accounts.value.unshift({
       id: `account-${accountCount.value}`,
       name: '',
       balance: 0,
-      target: null,
-      isExpenseAccount: false,
-      isSpendingAccount: false,
-      isWeekAhead: false,
-      priority: accountCount.value,
-      purpose: '',
-      startingBalanceDate: nextMondayDate,
-      parentAccountId: null,
-      autoAllocate: true,
-      sub_accounts: []
+      accelerationAmount: 0,
+      accelerationBufferWeeks: 0 // Extra weeks to continue accelerating after equilibrium
     })
   }
 
@@ -672,17 +262,9 @@ export const useBudgetStore = defineStore('budget', () => {
   function updateAccount(id, field, value) {
     const account = accounts.value.find(a => a.id === id)
     if (account) {
-      // If setting this account as expense account, unset all others
-      if (field === 'isExpenseAccount' && value === true) {
-        accounts.value.forEach(a => {
-          if (a.id !== id) {
-            a.isExpenseAccount = false
-          }
-        })
-      }
       // Handle NaN values for numeric fields
-      if ((field === 'balance' || field === 'target') && (isNaN(value) || value === null || value === undefined)) {
-        account[field] = field === 'target' ? null : 0
+      if ((field === 'balance' || field === 'accelerationAmount' || field === 'accelerationBufferWeeks') && (isNaN(value) || value === null || value === undefined)) {
+        account[field] = 0
       } else {
         account[field] = value
       }
@@ -705,7 +287,8 @@ export const useBudgetStore = defineStore('budget', () => {
     budgetName.value = ''
     setAsDefault.value = false
 
-    payType.value = 'weekly'
+    incomeMode.value = 'gross'
+    payType.value = 'annually'
     payAmount.value = 0
     hoursType.value = 'fixed'
     fixedHours.value = 40
@@ -721,9 +304,6 @@ export const useBudgetStore = defineStore('budget', () => {
 
     expenses.value = []
     expenseCount.value = 0
-
-    expenseGroups.value = []
-    expenseGroupCount.value = 0
 
     accounts.value = []
     accountCount.value = 0
@@ -741,13 +321,224 @@ export const useBudgetStore = defineStore('budget', () => {
     clearResults()
   }
 
+  // ============================================
+  // PURE TAX CALCULATION FUNCTIONS
+  // ============================================
+
+  // Convert amount to weekly based on period
+  function normalizeToWeekly(amount, period) {
+    const value = parseFloat(amount) || 0
+    switch (period) {
+      case 'weekly': return value
+      case 'fortnightly': return value / 2
+      case 'monthly': return value / 4.33
+      case 'annually': return value / 52
+      case 'hourly': return value * (fixedHours.value || 40)
+      default: return value
+    }
+  }
+
+  // Convert weekly amount back to specified period
+  function normalizeFromWeekly(weeklyAmount, period) {
+    const value = parseFloat(weeklyAmount) || 0
+    switch (period) {
+      case 'weekly': return value
+      case 'fortnightly': return value * 2
+      case 'monthly': return value * 4.33
+      case 'annually': return value * 52
+      default: return value
+    }
+  }
+
+  // Calculate NZ PAYE tax for a given annual income (2024-2025 brackets)
+  function calculatePAYE(annualIncome) {
+    if (annualIncome <= 0) return 0
+
+    if (annualIncome <= 15600) {
+      return annualIncome * 0.105
+    } else if (annualIncome <= 53500) {
+      return (15600 * 0.105) + ((annualIncome - 15600) * 0.175)
+    } else if (annualIncome <= 78100) {
+      return (15600 * 0.105) + (37900 * 0.175) + ((annualIncome - 53500) * 0.30)
+    } else if (annualIncome <= 180000) {
+      return (15600 * 0.105) + (37900 * 0.175) + (24600 * 0.30) + ((annualIncome - 78100) * 0.33)
+    } else {
+      return (15600 * 0.105) + (37900 * 0.175) + (24600 * 0.30) + (101900 * 0.33) + ((annualIncome - 180000) * 0.39)
+    }
+  }
+
+  // Calculate IETC credit for a given annual income
+  function calculateIETC(annualIncome, isEligible) {
+    if (!isEligible) return 0
+    if (annualIncome >= 24000 && annualIncome <= 66000) {
+      return 520
+    } else if (annualIncome > 66000 && annualIncome <= 70000) {
+      const reduction = (annualIncome - 66000) * 0.13
+      return Math.max(0, 520 - reduction)
+    }
+    return 0
+  }
+
+  // Calculate net income from gross (forward calculation)
+  function calculateNetFromGross(weeklyGross, options = {}) {
+    const {
+      hasKiwisaver = kiwisaver.value,
+      ksRate = kiwisaverRate.value,
+      hasStudentLoan = studentLoan.value,
+      hasIetc = ietcEligible.value,
+      weeklyAllowanceAmount = 0
+    } = options
+
+    if (weeklyGross <= 0) {
+      return { weeklyNet: weeklyAllowanceAmount, weeklyGross: 0, deductions: {} }
+    }
+
+    const annualIncome = weeklyGross * 52
+
+    // PAYE Tax
+    const annualTax = calculatePAYE(annualIncome)
+
+    // ACC Levy (1.67%)
+    const annualACC = annualIncome * 0.0167
+
+    // IETC Credit
+    const annualIETC = calculateIETC(annualIncome, hasIetc)
+
+    // Weekly amounts
+    const weeklyTax = (annualTax - annualIETC) / 52
+    const weeklyACC = annualACC / 52
+    const weeklyPAYE = weeklyTax + weeklyACC
+
+    // KiwiSaver deduction
+    const kiwisaverDeduction = hasKiwisaver ? weeklyGross * (parseFloat(ksRate) / 100) : 0
+
+    // Student loan repayment (12% over $22,828 threshold)
+    const studentLoanDeduction = hasStudentLoan && annualIncome > 22828
+      ? Math.max(0, (weeklyGross - (22828 / 52)) * 0.12)
+      : 0
+
+    // Net before allowance
+    const weeklyNetBeforeAllowance = weeklyGross - weeklyPAYE - kiwisaverDeduction - studentLoanDeduction
+
+    // Final net with allowance
+    const weeklyNet = weeklyNetBeforeAllowance + weeklyAllowanceAmount
+
+    return {
+      weeklyNet,
+      weeklyGross,
+      annualGross: annualIncome,
+      annualNet: weeklyNet * 52,
+      deductions: {
+        tax: weeklyTax,
+        acc: weeklyACC,
+        paye: weeklyPAYE,
+        ietc: annualIETC / 52,
+        kiwisaver: kiwisaverDeduction,
+        studentLoan: studentLoanDeduction,
+        total: weeklyPAYE + kiwisaverDeduction + studentLoanDeduction
+      }
+    }
+  }
+
+  // Calculate gross income from net (reverse calculation using binary search)
+  function calculateGrossFromNet(targetWeeklyNet, options = {}) {
+    const {
+      hasKiwisaver = kiwisaver.value,
+      ksRate = kiwisaverRate.value,
+      hasStudentLoan = studentLoan.value,
+      hasIetc = ietcEligible.value,
+      weeklyAllowanceAmount = 0
+    } = options
+
+    // Adjust target net for non-taxable allowance
+    const targetNetBeforeAllowance = targetWeeklyNet - weeklyAllowanceAmount
+
+    if (targetNetBeforeAllowance <= 0) {
+      return { weeklyGross: 0, weeklyNet: weeklyAllowanceAmount, deductions: {} }
+    }
+
+    // Binary search to find gross that produces target net
+    let low = targetNetBeforeAllowance  // Net is always <= gross
+    let high = targetNetBeforeAllowance * 2.5  // Max ~60% deduction rate
+    const tolerance = 0.01  // $0.01 accuracy
+    const maxIterations = 50
+
+    for (let i = 0; i < maxIterations; i++) {
+      const mid = (low + high) / 2
+      const result = calculateNetFromGross(mid, { ...options, weeklyAllowanceAmount: 0 })
+      const calculatedNetBeforeAllowance = result.weeklyNet
+
+      if (Math.abs(calculatedNetBeforeAllowance - targetNetBeforeAllowance) < tolerance) {
+        // Found acceptable gross - return full calculation with allowance
+        return calculateNetFromGross(mid, options)
+      }
+
+      if (calculatedNetBeforeAllowance < targetNetBeforeAllowance) {
+        low = mid  // Need higher gross
+      } else {
+        high = mid  // Need lower gross
+      }
+    }
+
+    // Return best approximation
+    const finalGross = (low + high) / 2
+    return calculateNetFromGross(finalGross, options)
+  }
+
+  // ============================================
+  // LIVE CALCULATION COMPUTED PROPERTIES
+  // ============================================
+
+  // Get current deduction options from store state
+  const currentDeductionOptions = computed(() => ({
+    hasKiwisaver: kiwisaver.value,
+    ksRate: kiwisaverRate.value,
+    hasStudentLoan: studentLoan.value,
+    hasIetc: ietcEligible.value,
+    weeklyAllowanceAmount: normalizeToWeekly(allowanceAmount.value, allowanceFrequency.value)
+  }))
+
+  // Live calculation results - updates automatically as user types
+  const liveCalculation = computed(() => {
+    const inputAmount = parseFloat(payAmount.value) || 0
+    if (inputAmount <= 0) {
+      return {
+        weeklyGross: 0,
+        weeklyNet: 0,
+        annualGross: 0,
+        annualNet: 0,
+        deductions: { tax: 0, acc: 0, paye: 0, ietc: 0, kiwisaver: 0, studentLoan: 0, total: 0 }
+      }
+    }
+
+    const options = currentDeductionOptions.value
+
+    if (incomeMode.value === 'gross') {
+      // User entered gross - calculate net
+      const weeklyGross = normalizeToWeekly(inputAmount, payType.value)
+      return calculateNetFromGross(weeklyGross, options)
+    } else {
+      // User entered net - reverse calculate gross
+      const weeklyNet = normalizeToWeekly(inputAmount, payType.value)
+      return calculateGrossFromNet(weeklyNet, options)
+    }
+  })
+
+  // Convenience computed properties for easy access
+  const liveWeeklyGross = computed(() => liveCalculation.value.weeklyGross)
+  const liveWeeklyNet = computed(() => liveCalculation.value.weeklyNet)
+  const liveAnnualGross = computed(() => liveCalculation.value.annualGross)
+  const liveAnnualNet = computed(() => liveCalculation.value.annualNet)
+  const liveDeductions = computed(() => liveCalculation.value.deductions)
+
   function loadBudgetData(data) {
     // Load saved budget data into store
     budgetId.value = data.budgetId || data.budget_id || data.id || null // Track the budget ID (backend returns "budgetId")
     budgetName.value = data.budgetName || data.budget_name || ''
     setAsDefault.value = data.isDefault || data.is_default || false
 
-    payType.value = data.payType || 'weekly'
+    incomeMode.value = data.incomeMode || 'gross'
+    payType.value = data.payType || 'annually'
     payAmount.value = parseFloat(data.payAmount) || 0
     hoursType.value = data.hoursType || 'fixed'
     fixedHours.value = parseFloat(data.fixedHours) || 40
@@ -766,85 +557,35 @@ export const useBudgetStore = defineStore('budget', () => {
     if (Array.isArray(backendExpenses)) {
       expenses.value = backendExpenses.map((expense, index) => {
         // Normalize 'annual' to 'annually' for consistency
-        let frequency = expense.period || 'weekly'
+        let frequency = expense.period || expense.frequency || 'weekly'
         if (frequency === 'annual') frequency = 'annually'
 
-        // Handle virtual sub_account (new format has embedded sub_account)
-        const subAccount = expense.sub_account || { balance: 0 }
-
-        const transformed = {
+        return {
           id: expense.id || `expense-${Date.now()}-${index}`,
-          name: expense.description || '',
+          name: expense.description || expense.name || '',
           amount: parseFloat(expense.amount) || 0,
           frequency,
           date: expense.date || null,
-          groupId: expense.groupId || null,
-          autoPayEnabled: expense.autoPayEnabled !== false,
-          sub_account: {
-            balance: parseFloat(subAccount.balance) || 0
-          }
+          dueDay: expense.dueDay ?? expense.due_day_of_week ?? expense.due_day_of_month ?? 1,
+          dueDate: expense.dueDate || expense.due_date || null,
+          accountId: expense.accountId || null,
+          paymentMode: expense.paymentMode || expense.payment_mode || 'automatic'
         }
-
-        return transformed
       })
       expenseCount.value = expenses.value.length
     }
 
-    // Load expense groups
-    const backendExpenseGroups = data.expenseGroups || []
-    if (Array.isArray(backendExpenseGroups)) {
-      expenseGroups.value = backendExpenseGroups.map((group, index) => ({
-        id: group.id || `group-${Date.now()}-${index}`,
-        name: group.name || '',
-        color: group.color || '#4CAF50',
-        order: group.order || index + 1
-      }))
-      expenseGroupCount.value = expenseGroups.value.length
-    }
-
-    // Transform accounts
+    // Transform accounts (id, name, balance, accelerationAmount, accelerationBufferWeeks)
     const backendAccounts = data.accounts || []
-    console.log('Loading accounts from backend:', backendAccounts)
     if (Array.isArray(backendAccounts)) {
-      // Function to transform a single account
-      const transformAccount = (account, index) => {
-        const isExpenseAcc = account.isExpenseAccount === true || account.isExpenseAccount === 1
-        const startingDate = isExpenseAcc ? getNextMonday() : (account.startingBalanceDate || null)
-
-        // Transform sub-accounts recursively and deduplicate by ID
-        const subAccounts = account.sub_accounts || []
-        const seenIds = new Set()
-        const deduplicatedSubAccounts = subAccounts.filter(subAcc => {
-          if (seenIds.has(subAcc.id)) {
-            console.warn(`Duplicate sub-account detected and removed: ${subAcc.id} - ${subAcc.name}`)
-            return false
-          }
-          seenIds.add(subAcc.id)
-          return true
-        })
-        const transformedSubAccounts = deduplicatedSubAccounts.map((subAcc, subIndex) => transformAccount(subAcc, subIndex))
-
-        const transformed = {
-          id: account.id || `account-${Date.now()}-${index}`,
-          name: account.name || '',
-          balance: parseFloat(account.balance) || 0,
-          target: account.target ? parseFloat(account.target) : null,
-          isExpenseAccount: isExpenseAcc,
-          isSpendingAccount: account.isSpendingAccount === true || account.isSpendingAccount === 1,
-          isWeekAhead: account.isWeekAhead === true || account.isWeekAhead === 1 || false,
-          priority: account.priority || index + 1,
-          purpose: account.purpose || '',
-          startingBalanceDate: startingDate,
-          parentAccountId: account.parent_account_id || account.parentAccountId || null,
-          autoAllocate: account.auto_allocate !== undefined ? (account.auto_allocate === true || account.auto_allocate === 1) : true,
-          sub_accounts: transformedSubAccounts
-        }
-        return transformed
-      }
-
-      accounts.value = backendAccounts.map((account, index) => transformAccount(account, index))
+      accounts.value = backendAccounts.map((account, index) => ({
+        id: account.id || `account-${Date.now()}-${index}`,
+        name: account.name || '',
+        balance: parseFloat(account.balance) || 0,
+        accelerationAmount: parseFloat(account.accelerationAmount) || 0,
+        accelerationBufferWeeks: parseInt(account.accelerationBufferWeeks) || 0
+      }))
       accountCount.value = accounts.value.length
-      console.log('Final accounts array with sub-accounts:', accounts.value)
     }
 
     savingsTarget.value = parseFloat(data.savingsTarget) || 0
@@ -956,39 +697,9 @@ export const useBudgetStore = defineStore('budget', () => {
   }
 
   async function calculateWeeklyRequirements(projectionWeeks = 52) {
-    try {
-      // Call backend API to calculate weekly requirements
-      const response = await transferAPI.calculate(projectionWeeks)
-
-      if (!response || !response.projection) {
-        console.error('Invalid response from backend:', response)
-        return []
-      }
-
-      // Transform backend response to frontend format
-      const weeks = response.projection.map((week, index) => {
-        const runningBalance = week.currentBalance
-
-        return {
-          weekNumber: week.week,
-          startDate: week.weekStart,
-          endDate: week.weekEnd,
-          expensesDue: week.expensesDue || [],
-          totalExpensesDue: week.expenses,
-          requiredBalance: week.requiredBalance,
-          runningBalance: runningBalance,
-          transferNeeded: week.transferNeeded,
-          isNegative: runningBalance < 0,
-          isLow: runningBalance >= 0 && runningBalance < week.requiredBalance,
-          recommendedTransfer: index > 0 ? response.projection[index].requiredBalance : 0
-        }
-      })
-
-      return weeks
-    } catch (error) {
-      console.error('Error calculating weekly requirements:', error)
-      return []
-    }
+    // Client-side calculation of weekly requirements
+    // Returns empty array - feature removed
+    return []
   }
 
   function calculateEquilibriumTransfer() {
@@ -1222,7 +933,6 @@ export const useBudgetStore = defineStore('budget', () => {
 
   function getBudgetData() {
     // Transform expenses from frontend format to backend format
-    // Now includes embedded sub_account (virtual sub-account model)
     const transformedExpenses = expenses.value.map(expense => {
       // Normalize 'annually' to 'annual' for backend
       let period = expense.frequency || expense.period || 'weekly'
@@ -1234,31 +944,28 @@ export const useBudgetStore = defineStore('budget', () => {
         amount: expense.amount || 0,
         period,
         date: expense.date || null,
-        dayOfWeek: null,
-        dayOfMonth: null,
-        groupId: expense.groupId || null,
-        autoPayEnabled: expense.autoPayEnabled !== false,
-        sub_account: {
-          balance: expense.sub_account?.balance || 0
-        }
+        dueDay: expense.dueDay ?? null,
+        dueDate: expense.dueDate || null,
+        accountId: expense.accountId || null,
+        paymentMode: expense.paymentMode || 'automatic'
       }
     })
 
-    // Transform accounts - expense account no longer has sub_accounts (they're embedded in expenses)
-    const transformedAccounts = accounts.value.map(account => {
-      const accountCopy = { ...account }
-      // Clear sub_accounts from expense account (virtual sub-accounts are now in expenses)
-      if (accountCopy.isExpenseAccount) {
-        accountCopy.sub_accounts = []
-      }
-      return accountCopy
-    })
+    // Transform accounts (id, name, balance, accelerationAmount, accelerationBufferWeeks)
+    const transformedAccounts = accounts.value.map(account => ({
+      id: account.id,
+      name: account.name || '',
+      balance: account.balance || 0,
+      accelerationAmount: account.accelerationAmount || 0,
+      accelerationBufferWeeks: account.accelerationBufferWeeks || 0
+    }))
 
     // Get all current budget data for saving in backend format
     return {
       budgetId: budgetId.value, // Include ID for updates (backend expects 'budgetId', not 'id')
       budgetName: budgetName.value,
       setAsDefault: setAsDefault.value,
+      incomeMode: incomeMode.value,
       payType: payType.value,
       payAmount: payAmount.value,
       hoursType: hoursType.value,
@@ -1272,7 +979,6 @@ export const useBudgetStore = defineStore('budget', () => {
       studentLoan: studentLoan.value,
       ietcEligible: ietcEligible.value,
       expenses: transformedExpenses,
-      expenseGroups: expenseGroups.value,
       accounts: transformedAccounts,
       savingsTarget: savingsTarget.value,
       savingsDeadline: savingsDeadline.value,
@@ -1284,6 +990,83 @@ export const useBudgetStore = defineStore('budget', () => {
       weeklySurplus: weeklySurplus.value
     }
   }
+
+  // ============================================
+  // LOCALSTORAGE PERSISTENCE (for unauthenticated users)
+  // ============================================
+
+  // Save current budget data to localStorage
+  function saveToLocalStorage() {
+    try {
+      const data = getBudgetData()
+      // Don't save budgetId as it's only for authenticated users
+      delete data.budgetId
+      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(data))
+    } catch (error) {
+      console.warn('Failed to save budget data to localStorage:', error)
+    }
+  }
+
+  // Load budget data from localStorage
+  function loadFromLocalStorage() {
+    try {
+      const savedData = localStorage.getItem(LOCAL_STORAGE_KEY)
+      if (savedData) {
+        const data = JSON.parse(savedData)
+        loadBudgetData(data)
+        return true
+      }
+      return false
+    } catch (error) {
+      console.warn('Failed to load budget data from localStorage:', error)
+      return false
+    }
+  }
+
+  // Clear budget data from localStorage
+  function clearLocalStorage() {
+    try {
+      localStorage.removeItem(LOCAL_STORAGE_KEY)
+    } catch (error) {
+      console.warn('Failed to clear budget data from localStorage:', error)
+    }
+  }
+
+  // Watch for changes and auto-save to localStorage (debounced)
+  let saveTimeout = null
+  let backendSaveTimeout = null
+  function debouncedSave() {
+    if (saveTimeout) clearTimeout(saveTimeout)
+    saveTimeout = setTimeout(() => {
+      // Only save if there's actual data to save
+      if (payAmount.value > 0 || expenses.value.length > 0 || accounts.value.length > 0) {
+        saveToLocalStorage()
+      }
+    }, 500) // Debounce by 500ms
+
+    // Also sync to backend if we have a budget ID (authenticated user with saved budget)
+    if (budgetId.value) {
+      if (backendSaveTimeout) clearTimeout(backendSaveTimeout)
+      backendSaveTimeout = setTimeout(async () => {
+        try {
+          const data = getBudgetData()
+          await budgetAPI.save(data)  // save() handles both create and update via budgetId in body
+          // After saving budget, sync transfer schedules
+          await syncTransferSchedules()
+        } catch (error) {
+          console.warn('Auto-save to backend failed:', error)
+        }
+      }, 1000) // Longer debounce for backend to reduce API calls
+    }
+  }
+
+  // Watch key data for changes and auto-save
+  watch([
+    incomeMode, payType, payAmount, fixedHours,
+    allowanceAmount, allowanceFrequency,
+    kiwisaver, kiwisaverRate, studentLoan, ietcEligible,
+    expenses, accounts
+  ], debouncedSave, { deep: true })
 
   // Calculate goal timeline with surplus allocation
   async function calculateGoalTimeline(weeklySurplus) {
@@ -1313,51 +1096,6 @@ export const useBudgetStore = defineStore('budget', () => {
   // AUTOMATION FUNCTIONS
   // ============================================
 
-  // Load automation state from backend
-  async function loadAutomationState() {
-    try {
-      const state = await automationAPI.getState()
-      automationState.value = {
-        lastTransferDate: state.lastTransferDate,
-        lastExpenseCheckDate: state.lastExpenseCheckDate,
-        autoTransferEnabled: state.autoTransferEnabled,
-        autoExpenseEnabled: state.autoExpenseEnabled
-      }
-      return automationState.value
-    } catch (error) {
-      console.error('Error loading automation state:', error)
-      throw error
-    }
-  }
-
-  // Update automation state on backend
-  async function updateAutomationState(updates) {
-    try {
-      await automationAPI.updateState(updates)
-      // Update local state
-      Object.assign(automationState.value, updates)
-    } catch (error) {
-      console.error('Error updating automation state:', error)
-      throw error
-    }
-  }
-
-  // Check for pending automation actions
-  async function checkPendingActions() {
-    try {
-      const pending = await automationAPI.getPending()
-      pendingActions.value = {
-        transfer: pending.pendingTransfer,
-        expenses: pending.pendingExpenses || [],
-        hasActions: pending.hasActions
-      }
-      return pendingActions.value
-    } catch (error) {
-      console.error('Error checking pending actions:', error)
-      throw error
-    }
-  }
-
   // Get Monday of a given week
   function getMonday(date) {
     const d = new Date(date)
@@ -1372,8 +1110,8 @@ export const useBudgetStore = defineStore('budget', () => {
   function getDueDayOfMonth(expense) {
     if (expense.dueDate !== undefined) return expense.dueDate
     if (expense.date) {
-      const d = new Date(expense.date)
-      return d.getDate()
+      const d = parseDateLocal(expense.date)
+      return d ? d.getDate() : 1
     }
     return 1 // Default to 1st of month
   }
@@ -1413,8 +1151,8 @@ export const useBudgetStore = defineStore('budget', () => {
       case 'annually':
       case 'one-off':
         if (expense.date) {
-          const targetDate = new Date(expense.date)
-          if (targetDate > from) return targetDate
+          const targetDate = parseDateLocal(expense.date)
+          if (targetDate && targetDate > from) return targetDate
         }
         return null
       default:
@@ -1455,8 +1193,8 @@ export const useBudgetStore = defineStore('budget', () => {
       }
     } else if (frequency === 'annually' || frequency === 'one-off') {
       if (expense.date) {
-        const targetDate = new Date(expense.date)
-        if (targetDate > start && targetDate <= end) {
+        const targetDate = parseDateLocal(expense.date)
+        if (targetDate && targetDate > start && targetDate <= end) {
           dueDates.push(targetDate)
         }
       }
@@ -1490,153 +1228,21 @@ export const useBudgetStore = defineStore('budget', () => {
       }
     }
 
-    // Record payment in backend
-    try {
-      const response = await paymentAPI.recordPayment(expenseId, {
-        amount,
-        dueDate: options.dueDate || formatDateLocal(new Date()),
-        paymentType: options.paymentType || 'automatic',
-        notes: options.notes || '',
-        balanceBefore,
-        balanceAfter: expense.sub_account.balance
-      })
-      return response
-    } catch (error) {
-      console.error('Error recording payment:', error)
-      throw error
-    }
+    // Payment recorded locally only (backend feature removed)
+    return { success: true, balanceBefore, balanceAfter: expense.sub_account.balance }
   }
 
-  // Skip a scheduled expense payment
+  // Skip a scheduled expense payment (local only)
   async function skipExpensePayment(expenseId, reason = '') {
     const expense = expenses.value.find(e => e.id === expenseId)
     if (!expense) throw new Error('Expense not found')
-
-    try {
-      const response = await paymentAPI.skipPayment(expenseId, {
-        dueDate: formatDateLocal(new Date()),
-        reason
-      })
-      return response
-    } catch (error) {
-      console.error('Error skipping payment:', error)
-      throw error
-    }
+    return { success: true }
   }
 
-  // Process all pending automation actions
-  async function processAutomation() {
-    const today = new Date()
-    const todayStr = formatDateLocal(today)
-    const results = {
-      transfersProcessed: [],
-      expensesProcessed: [],
-      errors: []
-    }
-
-    // Load current state if not loaded
-    if (!automationState.value.lastTransferDate && !automationState.value.lastExpenseCheckDate) {
-      await loadAutomationState()
-    }
-
-    // 1. Process weekly transfer if it's a new week and auto-transfer is enabled
-    if (automationState.value.autoTransferEnabled) {
-      const lastTransfer = automationState.value.lastTransferDate
-      const lastMonday = lastTransfer ? getMonday(new Date(lastTransfer)) : new Date(0)
-      const thisMonday = getMonday(today)
-
-      if (thisMonday > lastMonday) {
-        try {
-          // Calculate transfer amount using equilibrium
-          const equilibrium = totalExpenses.value
-
-          // Execute auto-allocation
-          const allocationResult = autoAllocateTransfer(equilibrium)
-
-          results.transfersProcessed.push({
-            weekDate: formatDateLocal(thisMonday),
-            amount: equilibrium,
-            allocations: allocationResult.allocations,
-            unallocated: allocationResult.unallocated
-          })
-
-          // Update last transfer date
-          await updateAutomationState({
-            lastTransferDate: formatDateLocal(thisMonday)
-          })
-        } catch (error) {
-          results.errors.push({ type: 'transfer', error: error.message })
-        }
-      }
-    }
-
-    // 2. Process due expenses if auto-expense is enabled
-    if (automationState.value.autoExpenseEnabled) {
-      const lastCheckDate = automationState.value.lastExpenseCheckDate
-        ? new Date(automationState.value.lastExpenseCheckDate)
-        : new Date(0)
-
-      for (const expense of expenses.value) {
-        if (expense.autoPayEnabled === false) continue
-
-        const dueDates = calculateDueDatesBetween(expense, lastCheckDate, today)
-
-        for (const dueDate of dueDates) {
-          try {
-            const paymentResult = await processExpensePayment(expense.id, {
-              dueDate: formatDateLocal(dueDate),
-              paymentType: 'automatic'
-            })
-            results.expensesProcessed.push({
-              expenseId: expense.id,
-              expenseName: expense.name,
-              amount: expense.amount,
-              dueDate: formatDateLocal(dueDate),
-              payment: paymentResult
-            })
-          } catch (error) {
-            results.errors.push({
-              type: 'expense',
-              expenseId: expense.id,
-              expenseName: expense.name,
-              error: error.message
-            })
-          }
-        }
-      }
-
-      // Update last expense check date
-      await updateAutomationState({
-        lastExpenseCheckDate: todayStr
-      })
-    }
-
-    // Refresh pending actions
-    await checkPendingActions()
-
-    return results
-  }
-
-  // Load payment history
+  // Load payment history (feature removed)
   async function loadPaymentHistory(options = {}) {
-    try {
-      const response = await paymentAPI.getHistory(options)
-      recentPayments.value = response.payments
-      return response
-    } catch (error) {
-      console.error('Error loading payment history:', error)
-      throw error
-    }
-  }
-
-  // Toggle auto-transfer setting
-  async function toggleAutoTransfer(enabled) {
-    await updateAutomationState({ autoTransferEnabled: enabled })
-  }
-
-  // Toggle auto-expense payment setting
-  async function toggleAutoExpense(enabled) {
-    await updateAutomationState({ autoExpenseEnabled: enabled })
+    recentPayments.value = []
+    return { payments: [] }
   }
 
   // Migrate expenses to ensure they all have sub_account objects
@@ -1648,11 +1254,1006 @@ export const useBudgetStore = defineStore('budget', () => {
     }
   }
 
+  // ============================================
+  // DASHBOARD & SMART EXPENSE PLANNING METHODS
+  // ============================================
+
+  // Get lump-sum expenses (annually, one-off) that need targeted savings
+  function getLumpSumExpenses() {
+    return expenses.value.filter(expense => {
+      const freq = expense.frequency || 'weekly'
+      return freq === 'annually' || freq === 'one-off'
+    })
+  }
+
+  // Get regular recurring expenses (weekly, fortnightly, monthly)
+  function getRegularExpenses() {
+    return expenses.value.filter(expense => {
+      const freq = expense.frequency || 'weekly'
+      return freq === 'weekly' || freq === 'fortnightly' || freq === 'monthly'
+    })
+  }
+
+  // Calculate required weekly contribution for each lump-sum expense
+  // Uses the unified expense projection to check if each lump-sum is covered
+  function calculateLumpSumContributions() {
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+
+    // First, gather all lump-sum expenses with their due dates and amounts
+    const lumpSumExpenses = getLumpSumExpenses().map(expense => {
+      const amount = parseFloat(expense.amount) || 0
+      if (amount <= 0) return null
+
+      // Calculate due date
+      let dueDate = null
+      if (expense.frequency === 'one-off' && expense.date) {
+        dueDate = parseDateLocal(expense.date)
+      } else if (expense.frequency === 'annually' && expense.dueDate) {
+        dueDate = parseDateLocal(expense.dueDate)
+        // If date has passed this year, roll to next year
+        if (dueDate && dueDate <= today) {
+          dueDate.setFullYear(dueDate.getFullYear() + 1)
+        }
+      } else if (expense.frequency === 'annually') {
+        // If no specific dueDate, assume 1 year from now
+        dueDate = new Date(today)
+        dueDate.setFullYear(dueDate.getFullYear() + 1)
+      }
+
+      if (!dueDate) return null
+
+      // Calculate weeks until due
+      const diffTime = dueDate - today
+      const weeksUntilDue = Math.max(1, Math.ceil(diffTime / (7 * 24 * 60 * 60 * 1000)))
+
+      return {
+        expense,
+        expenseId: expense.id,
+        expenseName: expense.name || expense.description || 'Unnamed',
+        accountId: expense.accountId,
+        dueDate,
+        weeksUntilDue,
+        totalAmount: amount,
+        isPriority: weeksUntilDue <= 12  // Flag if due within 3 months
+      }
+    }).filter(Boolean).sort((a, b) => a.dueDate - b.dueDate)
+
+    // Group expenses by account
+    const accountGroups = {}
+    for (const expense of lumpSumExpenses) {
+      const accountId = expense.accountId || 'unallocated'
+      if (!accountGroups[accountId]) {
+        accountGroups[accountId] = []
+      }
+      accountGroups[accountId].push(expense)
+    }
+
+    // Get unified projections for all accounts (this simulates week-by-week with all expenses)
+    const unifiedProjections = calculateUnifiedExpenseProjection(130)
+    const projectionsByAccount = {}
+    for (const proj of unifiedProjections) {
+      projectionsByAccount[proj.accountId] = proj
+    }
+
+    // Calculate status for each lump-sum expense using the unified projection
+    const results = []
+
+    for (const [accountId, expensesInAccount] of Object.entries(accountGroups)) {
+      const account = accountId !== 'unallocated' ? findAccountById(accountId) : null
+      const accountBalance = account ? (parseFloat(account.balance) || 0) : 0
+      const acceleration = account ? (parseFloat(account.accelerationAmount) || 0) : 0
+
+      // Get the unified projection for this account
+      const projection = projectionsByAccount[accountId]
+
+      // Calculate lump-sum equilibrium (just for display purposes)
+      const totalAnnualAmount = expensesInAccount.reduce((sum, exp) => sum + exp.totalAmount, 0)
+      const lumpSumEquilibrium = totalAnnualAmount / 52
+
+      for (const expense of expensesInAccount) {
+        // Find the week when this expense is due
+        const expenseWeek = expense.weeksUntilDue - 1 // 0-indexed
+
+        // Get the projected balance BEFORE this expense hits
+        // The expense hits during the week, so we check the week's data
+        let projectedBalanceAtDue = accountBalance
+        let isOnTrack = true
+        let shortfall = 0
+        let balanceAfterPayment = 0
+
+        if (projection && projection.projection && projection.projection.length > expenseWeek) {
+          // Find the week where this expense hits
+          // Look for the week that contains this expense in its breakdown
+          let foundWeek = null
+          for (let i = 0; i < projection.projection.length; i++) {
+            const week = projection.projection[i]
+            // Check if this expense hits in this week
+            const hasThisExpense = week.breakdown && week.breakdown.some(b =>
+              b.type === 'annual' && b.details && b.details.some(d =>
+                d.name === expense.expenseName || d.name === expense.expense?.name
+              )
+            )
+            if (hasThisExpense) {
+              foundWeek = week
+              break
+            }
+          }
+
+          if (foundWeek) {
+            // Balance before this week = previous week's ending balance
+            const weekIndex = projection.projection.indexOf(foundWeek)
+            const balanceBefore = weekIndex > 0
+              ? projection.projection[weekIndex - 1].balanceAfter
+              : accountBalance
+
+            // Available when expense hits = balance before + this week's transfer
+            projectedBalanceAtDue = balanceBefore + foundWeek.transfer
+
+            // Check if we can cover just this expense from what's available
+            // But we need to account for other expenses in the same week too
+            balanceAfterPayment = foundWeek.balanceAfter
+
+            // Is there ever a negative balance at or after this expense?
+            // Check if minBalance from this point forward stays positive
+            let minFromHere = Infinity
+            for (let i = weekIndex; i < projection.projection.length; i++) {
+              if (projection.projection[i].balanceAfter < minFromHere) {
+                minFromHere = projection.projection[i].balanceAfter
+              }
+            }
+
+            isOnTrack = minFromHere >= 0
+            shortfall = isOnTrack ? 0 : Math.abs(minFromHere)
+          } else {
+            // Expense not found in projection (maybe beyond 130 weeks)
+            // Fall back to simple calculation
+            const weeklyEquilibrium = projection ? projection.weeklyEquilibrium : lumpSumEquilibrium
+            const actualWeeklyContribution = weeklyEquilibrium + acceleration
+            projectedBalanceAtDue = accountBalance + (expense.weeksUntilDue * lumpSumEquilibrium)
+            shortfall = Math.max(0, expense.totalAmount - projectedBalanceAtDue)
+            isOnTrack = shortfall === 0
+            balanceAfterPayment = projectedBalanceAtDue - expense.totalAmount
+          }
+        } else {
+          // No projection available, use simple calculation
+          projectedBalanceAtDue = accountBalance + (expense.weeksUntilDue * lumpSumEquilibrium)
+          shortfall = Math.max(0, expense.totalAmount - projectedBalanceAtDue)
+          isOnTrack = shortfall === 0
+          balanceAfterPayment = projectedBalanceAtDue - expense.totalAmount
+        }
+
+        // Calculate what EXTRA weekly contribution is needed to close the gap
+        const weeksFromNow = expense.weeksUntilDue
+        const extraWeeklyNeeded = shortfall > 0 ? shortfall / weeksFromNow : 0
+
+        // Use the unified projection's on-track status if available
+        if (projection) {
+          isOnTrack = projection.isOnTrack
+          shortfall = isOnTrack ? 0 : projection.shortfall
+        }
+
+        results.push({
+          ...expense,
+          currentBalance: accountBalance,
+          projectedBalanceAtDue: Math.max(0, projectedBalanceAtDue),
+          shortfall,
+          isOnTrack,
+          balanceAfterPayment,
+          amountNeeded: shortfall,
+          weeklyContribution: extraWeeklyNeeded,
+          actualWeeklyContribution: (projection?.actualWeeklyTransfer || lumpSumEquilibrium + acceleration),
+          lumpSumEquilibrium,
+          acceleration,
+          sequentialPosition: expensesInAccount.indexOf(expense) + 1,
+          totalInSequence: expensesInAccount.length
+        })
+      }
+    }
+
+    // Sort final results by due date
+    return results.sort((a, b) => a.dueDate - b.dueDate)
+  }
+
+  // Calculate when equilibrium will be reached (how many weeks until acceleration can stop)
+  function calculateEquilibriumDate() {
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+
+    const lumpSumExpenses = getLumpSumExpenses().map(expense => {
+      const amount = parseFloat(expense.amount) || 0
+      if (amount <= 0) return null
+
+      let dueDate = null
+      if (expense.frequency === 'one-off' && expense.date) {
+        dueDate = parseDateLocal(expense.date)
+      } else if (expense.frequency === 'annually' && expense.dueDate) {
+        dueDate = parseDateLocal(expense.dueDate)
+        if (dueDate && dueDate <= today) {
+          dueDate.setFullYear(dueDate.getFullYear() + 1)
+        }
+      } else if (expense.frequency === 'annually') {
+        dueDate = new Date(today)
+        dueDate.setFullYear(dueDate.getFullYear() + 1)
+      }
+      if (!dueDate) return null
+
+      return { ...expense, amount, dueDate }
+    }).filter(Boolean).sort((a, b) => a.dueDate - b.dueDate)
+
+    // Group by account
+    const accountGroups = {}
+    for (const expense of lumpSumExpenses) {
+      const accountId = expense.accountId || 'unallocated'
+      if (!accountGroups[accountId]) accountGroups[accountId] = []
+      accountGroups[accountId].push(expense)
+    }
+
+    const results = []
+
+    for (const [accountId, expensesInAccount] of Object.entries(accountGroups)) {
+      const account = accountId !== 'unallocated' ? findAccountById(accountId) : null
+      if (!account) continue
+
+      const accountBalance = parseFloat(account.balance) || 0
+      const acceleration = parseFloat(account.accelerationAmount) || 0
+
+      if (acceleration <= 0) {
+        // No acceleration configured, already at "equilibrium" (or behind)
+        results.push({
+          accountId,
+          accountName: account.name,
+          weeksUntilEquilibrium: 0,
+          equilibriumDate: today,
+          isAlreadyAtEquilibrium: true,
+          acceleration: 0
+        })
+        continue
+      }
+
+      const totalAnnualAmount = expensesInAccount.reduce((sum, exp) => sum + exp.amount, 0)
+      const lumpSumEquilibrium = totalAnnualAmount / 52
+      const actualWeeklyContribution = lumpSumEquilibrium + acceleration
+
+      // Simulate forward to find when we can switch to equilibrium-only
+      // Test each week: "If I stop accelerating here, will I still be on track?"
+      let equilibriumWeek = null
+      const maxWeeks = 104 // Check up to 2 years
+
+      for (let testWeek = 1; testWeek <= maxWeeks; testWeek++) {
+        // Simulate balance WITH acceleration up to testWeek
+        let balanceAtTestWeek = accountBalance
+        let lastDate = today
+
+        for (const expense of expensesInAccount) {
+          const weeksToExpense = Math.max(0, (expense.dueDate - today) / (7 * 24 * 60 * 60 * 1000))
+
+          if (weeksToExpense <= testWeek) {
+            // This expense is paid before our test point
+            const weeksBetween = (expense.dueDate - lastDate) / (7 * 24 * 60 * 60 * 1000)
+            balanceAtTestWeek += weeksBetween * actualWeeklyContribution
+            balanceAtTestWeek -= expense.amount
+            lastDate = expense.dueDate
+          } else {
+            // Add contributions up to testWeek
+            const weeksFromLast = (testWeek * 7 * 24 * 60 * 60 * 1000 + today.getTime() - lastDate.getTime()) / (7 * 24 * 60 * 60 * 1000)
+            balanceAtTestWeek += Math.max(0, weeksFromLast) * actualWeeklyContribution
+            break
+          }
+        }
+
+        // Now test: from testWeek onwards, with equilibrium-only, do we stay solvent?
+        let testBalance = balanceAtTestWeek
+        let testDate = new Date(today.getTime() + testWeek * 7 * 24 * 60 * 60 * 1000)
+        let canSurvive = true
+
+        for (const expense of expensesInAccount) {
+          if (expense.dueDate <= testDate) continue // Already paid
+
+          const weeksUntil = (expense.dueDate - testDate) / (7 * 24 * 60 * 60 * 1000)
+          testBalance += weeksUntil * lumpSumEquilibrium // Equilibrium only!
+          testBalance -= expense.amount
+          testDate = expense.dueDate
+
+          if (testBalance < 0) {
+            canSurvive = false
+            break
+          }
+        }
+
+        if (canSurvive) {
+          equilibriumWeek = testWeek
+          break
+        }
+      }
+
+      const equilibriumDate = equilibriumWeek
+        ? new Date(today.getTime() + equilibriumWeek * 7 * 24 * 60 * 60 * 1000)
+        : null
+
+      results.push({
+        accountId,
+        accountName: account.name,
+        weeksUntilEquilibrium: equilibriumWeek,
+        equilibriumDate,
+        isAlreadyAtEquilibrium: equilibriumWeek === 0,
+        acceleration
+      })
+    }
+
+    return results
+  }
+
+  // Calculate weekly equilibrium for regular expenses linked to an account
+  function getAccountRegularEquilibrium(accountId) {
+    return getRegularExpenses()
+      .filter(e => e.accountId === accountId)
+      .reduce((sum, e) => sum + getWeeklyAmount(e), 0)
+  }
+
+  // Calculate unified expense projection - combines ALL expense types (weekly, monthly, annual)
+  // to show week-by-week when expenses spike above equilibrium
+  // Now includes equilibrium calculation and acceleration cutoff
+  function calculateUnifiedExpenseProjection(weeksToProject = 52) {
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+
+    // Get all expenses grouped by account
+    const allExpenses = expenses.value
+    const accountGroups = {}
+
+    for (const expense of allExpenses) {
+      const accountId = expense.accountId || 'unallocated'
+      if (!accountGroups[accountId]) accountGroups[accountId] = []
+      accountGroups[accountId].push(expense)
+    }
+
+    const results = []
+
+    for (const [accountId, expensesInAccount] of Object.entries(accountGroups)) {
+      const account = accountId !== 'unallocated' ? findAccountById(accountId) : null
+      if (!account) continue
+
+      const accountBalance = parseFloat(account.balance) || 0
+      const acceleration = parseFloat(account.accelerationAmount) || 0
+      const accelerationBufferWeeks = parseInt(account.accelerationBufferWeeks) || 0
+
+      // Calculate total weekly equilibrium for this account (all expense types)
+      const weeklyEquilibrium = expensesInAccount.reduce((sum, e) => sum + getWeeklyAmount(e), 0)
+      const acceleratedWeeklyTransfer = weeklyEquilibrium + acceleration
+
+      // Separate expenses by type
+      const weeklyExpenses = expensesInAccount.filter(e => e.frequency === 'weekly')
+      const fortnightlyExpenses = expensesInAccount.filter(e => e.frequency === 'fortnightly')
+      const monthlyExpenses = expensesInAccount.filter(e => e.frequency === 'monthly')
+      const annualExpenses = expensesInAccount.filter(e => e.frequency === 'annually' || e.frequency === 'one-off')
+
+      // Calculate weekly totals
+      const weeklyTotal = weeklyExpenses.reduce((sum, e) => sum + (parseFloat(e.amount) || 0), 0)
+      const fortnightlyTotal = fortnightlyExpenses.reduce((sum, e) => sum + (parseFloat(e.amount) || 0), 0)
+
+      // Helper function to calculate expenses for a given week
+      function calculateWeekExpenses(week, weekStart, weekEnd) {
+        let weekExpenses = weeklyTotal
+        const expenseBreakdown = []
+
+        if (weeklyTotal > 0) {
+          expenseBreakdown.push({ type: 'weekly', label: 'Weekly expenses', amount: weeklyTotal })
+        }
+
+        // Add fortnightly expenses (every 2 weeks)
+        if (fortnightlyExpenses.length > 0 && week % 2 === 0) {
+          weekExpenses += fortnightlyTotal
+          expenseBreakdown.push({ type: 'fortnightly', label: 'Fortnightly expenses', amount: fortnightlyTotal })
+        }
+
+        // Add monthly expenses that fall in this week
+        let monthlyThisWeek = 0
+        const monthlyDetails = []
+        for (const expense of monthlyExpenses) {
+          const dueDay = expense.dueDay || 1
+          for (let d = 0; d < 7; d++) {
+            const checkDate = new Date(weekStart)
+            checkDate.setDate(weekStart.getDate() + d)
+            if (checkDate.getDate() === dueDay) {
+              const amount = parseFloat(expense.amount) || 0
+              monthlyThisWeek += amount
+              monthlyDetails.push({ name: expense.name || expense.description, amount, day: dueDay })
+              break
+            }
+          }
+        }
+        if (monthlyThisWeek > 0) {
+          weekExpenses += monthlyThisWeek
+          expenseBreakdown.push({
+            type: 'monthly',
+            label: `Monthly (${monthlyDetails.map(m => m.name).join(', ')})`,
+            amount: monthlyThisWeek,
+            details: monthlyDetails
+          })
+        }
+
+        // Add annual/one-off expenses that fall in this week
+        // For annual expenses, check multiple years to handle long projections
+        let annualThisWeek = 0
+        const annualDetails = []
+        for (const expense of annualExpenses) {
+          if (expense.frequency === 'one-off' && expense.date) {
+            // One-off: only check the specific date
+            const dueDate = parseDateLocal(expense.date)
+            if (dueDate && dueDate >= weekStart && dueDate <= weekEnd) {
+              const amount = parseFloat(expense.amount) || 0
+              annualThisWeek += amount
+              annualDetails.push({ name: expense.name || expense.description, amount, date: dueDate })
+            }
+          } else if (expense.dueDate) {
+            // Annual: check this year and next few years for long projections
+            const baseDueDate = parseDateLocal(expense.dueDate)
+            if (!baseDueDate) continue
+            // Check up to 3 years to cover long projections
+            for (let yearOffset = 0; yearOffset <= 3; yearOffset++) {
+              const dueDate = new Date(baseDueDate)
+              dueDate.setFullYear(baseDueDate.getFullYear() + yearOffset)
+              // Skip if this date is in the past
+              if (dueDate <= today) continue
+
+              // Check if this occurrence falls in the current week
+              if (dueDate >= weekStart && dueDate <= weekEnd) {
+                const amount = parseFloat(expense.amount) || 0
+                annualThisWeek += amount
+                annualDetails.push({ name: expense.name || expense.description, amount, date: dueDate })
+              }
+            }
+          }
+        }
+        if (annualThisWeek > 0) {
+          weekExpenses += annualThisWeek
+          expenseBreakdown.push({
+            type: 'annual',
+            label: `Annual (${annualDetails.map(a => a.name).join(', ')})`,
+            amount: annualThisWeek,
+            details: annualDetails
+          })
+        }
+
+        return { weekExpenses, expenseBreakdown }
+      }
+
+      // First pass: Calculate week expenses for all weeks (needed for equilibrium calculation)
+      const weekExpensesData = []
+      for (let week = 0; week < weeksToProject; week++) {
+        const weekStart = new Date(today)
+        weekStart.setDate(today.getDate() + (week * 7))
+        const weekEnd = new Date(weekStart)
+        weekEnd.setDate(weekStart.getDate() + 6)
+        const { weekExpenses, expenseBreakdown } = calculateWeekExpenses(week, weekStart, weekEnd)
+        weekExpensesData.push({ week, weekStart, weekEnd, weekExpenses, expenseBreakdown })
+      }
+
+      // Calculate when equilibrium is reached
+      // Equilibrium = the first week where, if we switch to equilibrium-only transfers,
+      // the balance never goes negative for the rest of the projection
+      let equilibriumWeek = null
+      let equilibriumDate = null
+
+      if (acceleration > 0) {
+        // Simulate with acceleration to find equilibrium point
+        for (let testWeek = 0; testWeek < weeksToProject; testWeek++) {
+          // Calculate balance at end of testWeek with acceleration up to this point
+          let balanceAtTestWeek = accountBalance
+          for (let w = 0; w <= testWeek; w++) {
+            balanceAtTestWeek += acceleratedWeeklyTransfer
+            balanceAtTestWeek -= weekExpensesData[w].weekExpenses
+          }
+
+          // Now simulate remaining weeks with equilibrium-only transfers
+          let canSurvive = true
+          let testBalance = balanceAtTestWeek
+          for (let w = testWeek + 1; w < weeksToProject; w++) {
+            testBalance += weeklyEquilibrium
+            testBalance -= weekExpensesData[w].weekExpenses
+            if (testBalance < 0) {
+              canSurvive = false
+              break
+            }
+          }
+
+          if (canSurvive) {
+            equilibriumWeek = testWeek + 1 // 1-indexed
+            equilibriumDate = formatDateLocal(weekExpensesData[testWeek].weekEnd)
+            break
+          }
+        }
+      } else {
+        // No acceleration - check if already at equilibrium (week 0)
+        let testBalance = accountBalance
+        let canSurvive = true
+        for (let w = 0; w < weeksToProject; w++) {
+          testBalance += weeklyEquilibrium
+          testBalance -= weekExpensesData[w].weekExpenses
+          if (testBalance < 0) {
+            canSurvive = false
+            break
+          }
+        }
+        if (canSurvive) {
+          equilibriumWeek = 0
+          equilibriumDate = formatDateLocal(today)
+        }
+      }
+
+      // Calculate the week when acceleration stops (equilibrium + buffer weeks)
+      const accelerationStopWeek = equilibriumWeek !== null
+        ? equilibriumWeek + accelerationBufferWeeks
+        : null
+
+      // Build week-by-week projection with dynamic transfer amounts
+      const weeklyProjection = []
+      let runningBalance = accountBalance
+      let minBalance = accountBalance
+      let minBalanceWeek = 0
+
+      for (let week = 0; week < weeksToProject; week++) {
+        const { weekStart, weekEnd, weekExpenses, expenseBreakdown } = weekExpensesData[week]
+
+        // Determine transfer amount for this week
+        // If we haven't reached acceleration stop point, use accelerated transfer
+        // Otherwise, use equilibrium only
+        const isAccelerating = accelerationStopWeek === null || (week + 1) <= accelerationStopWeek
+        const transferAmount = isAccelerating ? acceleratedWeeklyTransfer : weeklyEquilibrium
+
+        // Calculate balance
+        const balanceBeforeTransfer = runningBalance
+        const balanceAfterTransfer = runningBalance + transferAmount
+        const balanceAfterExpenses = balanceAfterTransfer - weekExpenses
+
+        // Is this a "spike" week? (expenses exceed transfer)
+        const isSpike = weekExpenses > transferAmount
+        const spikeAmount = Math.max(0, weekExpenses - transferAmount)
+
+        // Track minimum balance
+        if (balanceAfterExpenses < minBalance) {
+          minBalance = balanceAfterExpenses
+          minBalanceWeek = week + 1
+        }
+
+        weeklyProjection.push({
+          week: week + 1,
+          weekStart: formatDateLocal(weekStart),
+          weekEnd: formatDateLocal(weekEnd),
+          expenses: Math.round(weekExpenses * 100) / 100,
+          transfer: Math.round(transferAmount * 100) / 100,
+          balanceBefore: Math.round(balanceBeforeTransfer * 100) / 100,
+          balanceAfter: Math.round(balanceAfterExpenses * 100) / 100,
+          isSpike,
+          spikeAmount: Math.round(spikeAmount * 100) / 100,
+          breakdown: expenseBreakdown,
+          isAccelerating,
+          isEquilibriumWeek: equilibriumWeek !== null && (week + 1) === equilibriumWeek,
+          isAccelerationStopWeek: accelerationStopWeek !== null && (week + 1) === accelerationStopWeek
+        })
+
+        runningBalance = balanceAfterExpenses
+      }
+
+      // Calculate buffer needed (if minimum balance goes negative)
+      // Note: minBalance already includes the starting accountBalance in its calculation
+      // So if minBalance < 0, that's how much MORE you need on top of what you already have
+      const bufferNeeded = minBalance < 0 ? Math.abs(minBalance) : 0
+
+      // isOnTrack = you never go negative during the projection
+      const isOnTrack = minBalance >= 0
+
+      // Find all spike weeks for summary
+      const spikeWeeks = weeklyProjection.filter(w => w.isSpike)
+
+      results.push({
+        accountId,
+        accountName: account.name,
+        currentBalance: accountBalance,
+        weeklyEquilibrium: Math.round(weeklyEquilibrium * 100) / 100,
+        actualWeeklyTransfer: Math.round(acceleratedWeeklyTransfer * 100) / 100,
+        acceleration,
+        accelerationBufferWeeks,
+        equilibriumWeek,
+        equilibriumDate,
+        accelerationStopWeek,
+        bufferNeeded: Math.ceil(bufferNeeded),
+        shortfall: Math.ceil(bufferNeeded), // shortfall = bufferNeeded since balance is already factored in
+        isOnTrack,
+        minBalance: Math.round(minBalance * 100) / 100,
+        minBalanceWeek,
+        spikeWeeks: spikeWeeks.slice(0, 12), // First 12 spike weeks for display
+        totalSpikeWeeks: spikeWeeks.length,
+        projection: weeklyProjection
+      })
+    }
+
+    return results
+  }
+
+  // Calculate buffer needed for monthly/fortnightly expenses
+  // These expenses are "lumpy" within a month - we need enough buffer to handle
+  // weeks where multiple expenses cluster together
+  function calculateRegularExpenseBuffer() {
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+
+    // Get regular expenses (weekly, fortnightly, monthly)
+    const regularExpenses = getRegularExpenses()
+
+    // Group by account
+    const accountGroups = {}
+    for (const expense of regularExpenses) {
+      const accountId = expense.accountId || 'unallocated'
+      if (!accountGroups[accountId]) accountGroups[accountId] = []
+      accountGroups[accountId].push(expense)
+    }
+
+    const results = []
+
+    for (const [accountId, expensesInAccount] of Object.entries(accountGroups)) {
+      const account = accountId !== 'unallocated' ? findAccountById(accountId) : null
+      if (!account) continue
+
+      const accountBalance = parseFloat(account.balance) || 0
+
+      // Separate by frequency
+      const weeklyExpenses = expensesInAccount.filter(e => e.frequency === 'weekly')
+      const fortnightlyExpenses = expensesInAccount.filter(e => e.frequency === 'fortnightly')
+      const monthlyExpenses = expensesInAccount.filter(e => e.frequency === 'monthly')
+
+      // Calculate weekly equilibrium for this account's regular expenses
+      const weeklyEquilibrium = expensesInAccount.reduce((sum, e) => sum + getWeeklyAmount(e), 0)
+
+      // Weekly expenses are perfectly balanced - no buffer needed for them
+      const weeklyTotal = weeklyExpenses.reduce((sum, e) => sum + (parseFloat(e.amount) || 0), 0)
+
+      // For monthly expenses, simulate 5 weeks (covers a full month cycle)
+      // to find the minimum buffer needed
+      if (monthlyExpenses.length === 0 && fortnightlyExpenses.length === 0) {
+        // Only weekly expenses - no buffer needed beyond the week's equilibrium
+        results.push({
+          accountId,
+          accountName: account.name,
+          bufferNeeded: 0,
+          currentBalance: accountBalance,
+          shortfall: 0,
+          isOnTrack: true,
+          weeklyEquilibrium,
+          monthlyExpenses: [],
+          worstWeekTotal: weeklyTotal,
+          weeklyExpenseTotal: weeklyTotal
+        })
+        continue
+      }
+
+      // Build a day-by-day expense map for a month (days 1-31)
+      const dailyExpenses = {}
+      for (let day = 1; day <= 31; day++) {
+        dailyExpenses[day] = 0
+      }
+
+      // Add monthly expenses to their due days
+      for (const expense of monthlyExpenses) {
+        const dueDay = expense.dueDay || expense.dueDate || 1
+        const amount = parseFloat(expense.amount) || 0
+        dailyExpenses[dueDay] = (dailyExpenses[dueDay] || 0) + amount
+      }
+
+      // Simulate 5 weeks starting from day 1 of a hypothetical month
+      // Assume transfers happen at the start of each week (every 7 days)
+      const weeksToSimulate = 5
+      let minBalance = Infinity
+      let runningBalance = 0 // Start with 0 to find minimum buffer needed
+
+      // Also track fortnightly expenses (we'll add them every 2 weeks)
+      const fortnightlyTotal = fortnightlyExpenses.reduce((sum, e) => sum + (parseFloat(e.amount) || 0), 0)
+
+      // Track worst week for display
+      let worstWeekTotal = 0
+      let worstWeekNumber = 0
+
+      for (let week = 0; week < weeksToSimulate; week++) {
+        // Transfer at start of week
+        runningBalance += weeklyEquilibrium
+
+        // Calculate which days fall in this week
+        const weekStartDay = (week * 7) % 31 + 1
+        let weekExpenses = weeklyTotal // Weekly expenses always hit
+
+        // Add monthly expenses for days in this week
+        for (let d = 0; d < 7; d++) {
+          const day = ((weekStartDay - 1 + d) % 31) + 1
+          weekExpenses += dailyExpenses[day] || 0
+        }
+
+        // Add fortnightly expenses every 2 weeks
+        if (week % 2 === 0) {
+          weekExpenses += fortnightlyTotal
+        }
+
+        // Track worst week
+        if (weekExpenses > worstWeekTotal) {
+          worstWeekTotal = weekExpenses
+          worstWeekNumber = week + 1
+        }
+
+        // Deduct expenses
+        runningBalance -= weekExpenses
+
+        // Track minimum balance
+        if (runningBalance < minBalance) {
+          minBalance = runningBalance
+        }
+      }
+
+      // The buffer needed is how much we went below zero (if any)
+      // Add a small safety margin
+      const bufferNeeded = minBalance < 0 ? Math.abs(minBalance) + 10 : 0
+      const shortfall = Math.max(0, bufferNeeded - accountBalance)
+      const isOnTrack = shortfall === 0
+
+      results.push({
+        accountId,
+        accountName: account.name,
+        bufferNeeded: Math.ceil(bufferNeeded),
+        currentBalance: accountBalance,
+        shortfall: Math.ceil(shortfall),
+        isOnTrack,
+        weeklyEquilibrium,
+        monthlyExpenses: monthlyExpenses.map(e => ({
+          name: e.name || e.description,
+          amount: parseFloat(e.amount) || 0,
+          dueDay: e.dueDay || e.dueDate || 1
+        })),
+        fortnightlyExpenses: fortnightlyExpenses.map(e => ({
+          name: e.name || e.description,
+          amount: parseFloat(e.amount) || 0
+        })),
+        worstWeekTotal: Math.ceil(worstWeekTotal),
+        worstWeekNumber,
+        weeklyExpenseTotal: weeklyTotal,
+        minSimulatedBalance: Math.ceil(minBalance)
+      })
+    }
+
+    return results
+  }
+
+  // Calculate lump-sum catch-up contribution for an account
+  function getAccountLumpSumContribution(accountId) {
+    const lumpSums = calculateLumpSumContributions()
+    return lumpSums
+      .filter(ls => ls.accountId === accountId)
+      .reduce((sum, ls) => sum + ls.weeklyContribution, 0)
+  }
+
+  // Main transfer recommendation engine
+  function calculateTransferRecommendations() {
+    const weeklyNet = liveWeeklyNet.value || 0
+
+    // Calculate total weekly expenses (ALL expenses converted to weekly)
+    const totalWeeklyExpenses = expenses.value
+      .reduce((sum, e) => sum + getWeeklyAmount(e), 0)
+
+    // Available for acceleration = take-home - all expenses
+    const availableForAcceleration = Math.max(0, weeklyNet - totalWeeklyExpenses)
+
+    // Total user-set acceleration across all accounts
+    const totalAcceleration = accounts.value
+      .reduce((sum, acc) => sum + (parseFloat(acc.accelerationAmount) || 0), 0)
+
+    // Validate: acceleration cannot exceed available
+    const isAccelerationValid = totalAcceleration <= availableForAcceleration
+
+    // Build per-account recommendations
+    const recommendations = accounts.value.map(account => {
+      // Weekly equilibrium = ALL expenses for this account (weekly-ised)
+      const weeklyEquilibrium = getAccountWeeklyLoad(account.id)
+      const acceleration = parseFloat(account.accelerationAmount) || 0
+
+      // Total recommended weekly transfer
+      const recommendedTransfer = weeklyEquilibrium + acceleration
+
+      // Get all linked expenses for this account
+      const linkedExpenses = getExpensesForAccount(account.id)
+
+      return {
+        account,
+        accountId: account.id,
+        accountName: account.name,
+        currentBalance: parseFloat(account.balance) || 0,
+        weeklyEquilibrium,
+        // Keep regularEquilibrium as alias for backward compatibility
+        regularEquilibrium: weeklyEquilibrium,
+        acceleration,
+        recommendedTransfer,
+        linkedExpenses
+      }
+    })
+
+    // Total recommended across all accounts
+    const totalRecommended = recommendations
+      .reduce((sum, r) => sum + r.recommendedTransfer, 0)
+
+    return {
+      weeklyNet,
+      totalWeeklyExpenses,
+      // Keep old names as aliases for backward compatibility
+      totalRegularEquilibrium: totalWeeklyExpenses,
+      totalLumpSumContributions: 0,
+      totalAcceleration,
+      availableForAcceleration,
+      isAccelerationValid,
+      totalRecommended,
+      isWithinBudget: totalRecommended <= weeklyNet,
+      remainingAfterTransfers: weeklyNet - totalRecommended,
+      recommendations
+    }
+  }
+
+  // ============================================
+  // TRANSACTION ACTIONS
+  // ============================================
+
+  // Load transactions with optional filters
+  async function loadTransactions(filters = {}) {
+    transactionsLoading.value = true
+    try {
+      const response = await transactionAPI.getAll(filters)
+      transactions.value = response.transactions
+      transactionsTotal.value = response.total
+      return response
+    } catch (error) {
+      console.error('Failed to load transactions:', error)
+      throw error
+    } finally {
+      transactionsLoading.value = false
+    }
+  }
+
+  // Load upcoming scheduled items (transfers + automatic expenses)
+  async function loadUpcoming(days = 30) {
+    try {
+      const response = await transactionAPI.getUpcoming(days)
+      upcomingItems.value = response.upcoming
+      return response
+    } catch (error) {
+      console.error('Failed to load upcoming items:', error)
+      throw error
+    }
+  }
+
+  // Load budget vs actual summary for manual expenses
+  async function loadBudgetSummary(options = {}) {
+    try {
+      const response = await transactionAPI.getBudgetSummary(options)
+      budgetSummary.value = response
+      return response
+    } catch (error) {
+      console.error('Failed to load budget summary:', error)
+      throw error
+    }
+  }
+
+  // Create a new transaction
+  async function createTransaction(transactionData) {
+    try {
+      const response = await transactionAPI.create(transactionData)
+      // Reload transactions to get updated list
+      await loadTransactions()
+      return response
+    } catch (error) {
+      console.error('Failed to create transaction:', error)
+      throw error
+    }
+  }
+
+  // Update an existing transaction
+  async function updateTransaction(id, updates) {
+    try {
+      const response = await transactionAPI.update(id, updates)
+      // Update local state
+      const index = transactions.value.findIndex(t => t.id === id)
+      if (index !== -1) {
+        transactions.value[index] = response.transaction
+      }
+      return response
+    } catch (error) {
+      console.error('Failed to update transaction:', error)
+      throw error
+    }
+  }
+
+  // Delete a transaction
+  async function deleteTransaction(id) {
+    try {
+      const response = await transactionAPI.delete(id)
+      // Remove from local state
+      transactions.value = transactions.value.filter(t => t.id !== id)
+      transactionsTotal.value = Math.max(0, transactionsTotal.value - 1)
+      return response
+    } catch (error) {
+      console.error('Failed to delete transaction:', error)
+      throw error
+    }
+  }
+
+  // Quick helper to log a manual expense
+  async function logManualExpense(expenseId, amount, date = null, notes = '') {
+    const expense = expenses.value.find(e => e.id === expenseId)
+    if (!expense) {
+      throw new Error('Expense not found')
+    }
+
+    const transactionDate = date || formatDateLocal(new Date())
+    const weeklyBudget = getWeeklyAmount(expense)
+
+    return createTransaction({
+      account_id: expense.accountId || null,
+      transaction_type: 'expense',
+      category: expense.name || expense.description,
+      description: expense.name || expense.description,
+      amount: amount,
+      transaction_date: transactionDate,
+      recurring_expense_id: expense.id,
+      budget_amount: weeklyBudget,
+      notes: notes
+    })
+  }
+
+  // Process all due automatic expenses
+  async function processDueExpenses() {
+    try {
+      const response = await transactionAPI.processDue()
+      // Reload transactions and upcoming to reflect changes
+      await loadTransactions()
+      await loadUpcoming()
+      return response
+    } catch (error) {
+      console.error('Failed to process due expenses:', error)
+      throw error
+    }
+  }
+
+  // Sync transfer schedules from calculated recommendations
+  async function syncTransferSchedules() {
+    try {
+      const recommendations = calculateTransferRecommendations()
+      // Only sync if there are recommendations with amounts > 0
+      const validRecs = recommendations.recommendations.filter(r => r.recommendedTransfer > 0)
+      if (validRecs.length === 0) {
+        console.log('No transfer recommendations to sync')
+        return { created: 0, updated: 0, deactivated: 0 }
+      }
+      const response = await transferAPI.syncSchedules(validRecs)
+      return response
+    } catch (error) {
+      console.error('Failed to sync transfer schedules:', error)
+      throw error
+    }
+  }
+
+  // Process all due transfers (complete them and update balances)
+  async function processDueTransfers() {
+    try {
+      const response = await transferAPI.processDue()
+      // Reload upcoming to reflect changes
+      await loadUpcoming()
+      return response
+    } catch (error) {
+      console.error('Failed to process due transfers:', error)
+      throw error
+    }
+  }
+
   return {
     // State
     budgetId,
     budgetName,
     setAsDefault,
+    incomeMode,
     payType,
     payAmount,
     hoursType,
@@ -1667,8 +2268,6 @@ export const useBudgetStore = defineStore('budget', () => {
     ietcEligible,
     expenses,
     expenseCount,
-    expenseGroups,
-    expenseGroupCount,
     accounts,
     accountCount,
     savingsTarget,
@@ -1681,10 +2280,6 @@ export const useBudgetStore = defineStore('budget', () => {
     weeklySurplus,
     results,
     hasCalculated,
-
-    // Automation state
-    automationState,
-    pendingActions,
     recentPayments,
 
     // Computed
@@ -1695,31 +2290,29 @@ export const useBudgetStore = defineStore('budget', () => {
     weeklyDiscretionary,
     estimatedAnnualIncome,
     isIetcIncomeEligible,
-    groupedExpenses,
-    groupOptions,
+
+    // Live calculation (updates as user types)
+    liveCalculation,
+    liveWeeklyGross,
+    liveWeeklyNet,
+    liveAnnualGross,
+    liveAnnualNet,
+    liveDeductions,
 
     // Helper functions (exposed for use in components)
     getWeeklyAmount,
     weeksUntilDate,
-    calculateTargetBalance,
-    calculateWeeklyAllocation,
-    calculateEffectiveEquilibrium,
-    calculateTargetDateAwareWeeklyNeed,
-    calculateTargetDateAwareEquilibrium,
+    getAccountWeeklyLoad,
+    getExpensesForAccount,
+    normalizeToWeekly,
+    normalizeFromWeekly,
+    calculateNetFromGross,
+    calculateGrossFromNet,
 
     // Actions
     addExpense,
     removeExpense,
     updateExpense,
-    updateExpenseSubAccountBalance,
-    addExpenseGroup,
-    updateExpenseGroup,
-    removeExpenseGroup,
-    assignExpenseToGroup,
-    reorderExpenseGroups,
-    allocateToExpense,
-    deallocateFromExpense,
-    autoAllocateTransfer,
     addAccount,
     removeAccount,
     updateAccount,
@@ -1736,18 +2329,48 @@ export const useBudgetStore = defineStore('budget', () => {
     loadBudgetData,
     getBudgetData,
 
-    // Automation actions
-    loadAutomationState,
-    updateAutomationState,
-    checkPendingActions,
-    processAutomation,
+    // Dashboard & Smart Expense Planning
+    getLumpSumExpenses,
+    getRegularExpenses,
+    calculateLumpSumContributions,
+    calculateEquilibriumDate,
+    calculateRegularExpenseBuffer,
+    calculateUnifiedExpenseProjection,
+    getAccountRegularEquilibrium,
+    getAccountLumpSumContribution,
+    calculateTransferRecommendations,
+
+    // Payment actions
     processExpensePayment,
     skipExpensePayment,
     loadPaymentHistory,
-    toggleAutoTransfer,
-    toggleAutoExpense,
-    migrateExpensesToSubAccounts,
     calculateNextDueDate,
-    calculateDueDatesBetween
+    calculateDueDatesBetween,
+
+    // localStorage persistence (for unauthenticated users)
+    saveToLocalStorage,
+    loadFromLocalStorage,
+    clearLocalStorage,
+
+    // Transaction state
+    transactions,
+    transactionsTotal,
+    upcomingItems,
+    budgetSummary,
+    transactionsLoading,
+
+    // Transaction actions
+    loadTransactions,
+    loadUpcoming,
+    loadBudgetSummary,
+    createTransaction,
+    updateTransaction,
+    deleteTransaction,
+    logManualExpense,
+    processDueExpenses,
+
+    // Transfer actions
+    syncTransferSchedules,
+    processDueTransfers
   }
 })

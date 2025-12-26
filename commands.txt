@@ -6,4 +6,3 @@ Separate commands to run on local computer and commands to run on a server or an
 
 Please overwrite everything below this line. Don't overwrite this line or above.
 
-docker run --rm -v nz-budget-calculator_budget-data:/data alpine sh -c "apk add --no-cache sqlite && sqlite3 /data/budget.db 'SELECT id, expense_name, amount_paid, payment_date, payment_type, created_at FROM payment_history WHERE user_id = 3 ORDER BY created_at DESC'"
