@@ -38,7 +38,7 @@
           <span class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm">$</span>
           <input
             type="number"
-            :value="account.balance"
+            :value="formattedBalance"
             @input="budgetStore.updateAccount(account.id, 'balance', parseFloat($event.target.value) || 0)"
             placeholder="0.00"
             class="w-full pl-7 pr-3 py-2 bg-white border border-slate-200 rounded-xl text-sm font-mono focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-400 transition-all"
@@ -92,7 +92,7 @@
             <span class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm">$</span>
             <input
               type="number"
-              :value="account.balance"
+              :value="formattedBalance"
               @input="budgetStore.updateAccount(account.id, 'balance', parseFloat($event.target.value) || 0)"
               placeholder="0.00"
               class="w-full pl-7 pr-3 py-2 bg-white border border-slate-200 rounded-xl text-sm font-mono focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-400 transition-all"
@@ -138,6 +138,12 @@ const linkedExpenseCount = computed(() => {
 // Weekly load from linked expenses
 const weeklyLoad = computed(() => {
   return budgetStore.getAccountWeeklyLoad(props.account.id)
+})
+
+// Format balance to 2 decimal places for display
+const formattedBalance = computed(() => {
+  const balance = props.account.balance || 0
+  return Math.round(balance * 100) / 100
 })
 
 // Format money helper

@@ -13,6 +13,11 @@ function formatDateLocal(date) {
   return `${year}-${month}-${day}`
 }
 
+// Helper function to round to 2 decimal places (for currency values)
+function roundCurrency(value) {
+  return Math.round((parseFloat(value) || 0) * 100) / 100
+}
+
 // Helper function to parse YYYY-MM-DD string to local midnight (not UTC)
 // new Date('2025-01-15') creates UTC midnight which shifts the date in NZ timezone
 // This function creates local midnight instead
@@ -589,7 +594,7 @@ export const useBudgetStore = defineStore('budget', () => {
       accounts.value = backendAccounts.map((account, index) => ({
         id: account.id || `account-${Date.now()}-${index}`,
         name: account.name || '',
-        balance: parseFloat(account.balance) || 0,
+        balance: roundCurrency(account.balance),
         accelerationAmount: parseFloat(account.accelerationAmount) || 0,
         accelerationBufferWeeks: parseInt(account.accelerationBufferWeeks) || 0
       }))
@@ -1224,7 +1229,7 @@ export const useBudgetStore = defineStore('budget', () => {
     if (!expense.sub_account) {
       expense.sub_account = { balance: 0 }
     }
-    expense.sub_account.balance -= amount
+    expense.sub_account.balance = roundCurrency(expense.sub_account.balance - amount)
     const balanceAfter = expense.sub_account.balance
 
     // If sub-account went negative and there's unallocated funds, use them
@@ -1232,8 +1237,8 @@ export const useBudgetStore = defineStore('budget', () => {
       const expenseAccount = accounts.value.find(a => a.isExpenseAccount)
       if (expenseAccount && expenseAccount.balance > 0) {
         const borrowAmount = Math.min(Math.abs(balanceAfter), expenseAccount.balance)
-        expenseAccount.balance -= borrowAmount
-        expense.sub_account.balance += borrowAmount
+        expenseAccount.balance = roundCurrency(expenseAccount.balance - borrowAmount)
+        expense.sub_account.balance = roundCurrency(expense.sub_account.balance + borrowAmount)
       }
     }
 
@@ -2232,7 +2237,7 @@ export const useBudgetStore = defineStore('budget', () => {
           for (const freshAccount of budget.accounts) {
             const existingAccount = accounts.value.find(a => a.id === freshAccount.id)
             if (existingAccount) {
-              existingAccount.balance = freshAccount.balance
+              existingAccount.balance = roundCurrency(freshAccount.balance)
             }
           }
         }
