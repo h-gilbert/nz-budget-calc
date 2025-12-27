@@ -2152,6 +2152,10 @@ export const useBudgetStore = defineStore('budget', () => {
       const response = await transactionAPI.create(transactionData)
       // Reload transactions to get updated list
       await loadTransactions()
+      // Refresh account balances if transaction affects an account
+      if (transactionData.account_id) {
+        await refreshAccountBalances()
+      }
       return response
     } catch (error) {
       console.error('Failed to create transaction:', error)
@@ -2216,6 +2220,29 @@ export const useBudgetStore = defineStore('budget', () => {
     })
   }
 
+  // Refresh account balances from the backend (called after transactions/transfers update balances)
+  async function refreshAccountBalances() {
+    try {
+      // Reload the budget to get fresh account balances from the database
+      const currentBudgetId = budgetId.value
+      if (currentBudgetId) {
+        const budget = await budgetAPI.load(currentBudgetId)
+        if (budget && budget.accounts) {
+          // Update only the account balances, preserving other account properties
+          for (const freshAccount of budget.accounts) {
+            const existingAccount = accounts.value.find(a => a.id === freshAccount.id)
+            if (existingAccount) {
+              existingAccount.balance = freshAccount.balance
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Failed to refresh account balances:', error)
+      // Don't throw - this is a non-critical operation
+    }
+  }
+
   // Process all due automatic expenses
   async function processDueExpenses() {
     try {
@@ -2223,6 +2250,8 @@ export const useBudgetStore = defineStore('budget', () => {
       // Reload transactions and upcoming to reflect changes
       await loadTransactions()
       await loadUpcoming()
+      // Refresh account balances to show updated totals
+      await refreshAccountBalances()
       return response
     } catch (error) {
       console.error('Failed to process due expenses:', error)
@@ -2254,6 +2283,8 @@ export const useBudgetStore = defineStore('budget', () => {
       const response = await transferAPI.processDue()
       // Reload upcoming to reflect changes
       await loadUpcoming()
+      // Refresh account balances to show updated totals
+      await refreshAccountBalances()
       return response
     } catch (error) {
       console.error('Failed to process due transfers:', error)
@@ -2382,6 +2413,7 @@ export const useBudgetStore = defineStore('budget', () => {
     deleteTransaction,
     logManualExpense,
     processDueExpenses,
+    refreshAccountBalances,
 
     // Transfer actions
     syncTransferSchedules,

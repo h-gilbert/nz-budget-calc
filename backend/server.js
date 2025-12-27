@@ -381,7 +381,26 @@ app.get('/api/budget/load/:id?', authenticateToken, (req, res) => {
         // Parse expenses, expense groups, and accounts JSON
         const expenses = budgetData.expenses ? JSON.parse(budgetData.expenses) : [];
         const expenseGroups = budgetData.expense_groups ? JSON.parse(budgetData.expense_groups) : [];
-        const accounts = budgetData.accounts ? JSON.parse(budgetData.accounts) : [];
+        const accountsFromJson = budgetData.accounts ? JSON.parse(budgetData.accounts) : [];
+
+        // Fetch live account balances from the accounts table
+        const dbAccounts = db.prepare(`
+            SELECT frontend_id, current_balance FROM accounts
+            WHERE user_id = ? AND budget_id = ?
+        `).all(userId, budgetData.id);
+
+        // Create a map of frontend_id -> current_balance
+        const balanceMap = new Map(dbAccounts.map(a => [a.frontend_id, a.current_balance]));
+
+        // Merge live balances into the accounts from JSON
+        const accounts = accountsFromJson.map(account => {
+            const liveBalance = balanceMap.get(account.id);
+            return {
+                ...account,
+                // Use live balance from DB if available, otherwise keep JSON balance
+                balance: liveBalance !== undefined ? liveBalance : (account.balance || 0)
+            };
+        });
 
         res.json({
             budgetId: budgetData.id,
