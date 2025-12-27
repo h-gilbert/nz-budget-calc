@@ -527,17 +527,16 @@ function syncAccountsToTable(userId, budgetId, accountsJson) {
         currentFrontendIds.add(account.id);
 
         if (existingMap.has(account.id)) {
-            // Update existing account
+            // Update existing account - DO NOT overwrite current_balance
+            // Balance is managed by transactions/transfers, not budget saves
             const dbId = existingMap.get(account.id);
             db.prepare(`
                 UPDATE accounts SET
                     name = ?,
-                    current_balance = ?,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
             `).run(
                 account.name || 'Unnamed Account',
-                account.balance || 0,
                 dbId
             );
             frontendToDbIdMap.set(account.id, dbId);
