@@ -1412,6 +1412,42 @@ app.post('/api/transactions', authenticateToken, (req, res) => {
             return res.status(400).json({ error: 'Invalid transaction_type. Must be: income, expense, or transfer' });
         }
 
+        // Resolve account_id: if it's a frontend ID (string like "account-1"),
+        // look up the database ID from accounts.frontend_id
+        let resolvedAccountId = null;
+        if (account_id) {
+            if (typeof account_id === 'number' || /^\d+$/.test(account_id)) {
+                // It's already a numeric database ID
+                resolvedAccountId = parseInt(account_id, 10);
+            } else {
+                // It's a frontend ID - look up the database ID
+                const account = db.prepare(
+                    'SELECT id FROM accounts WHERE frontend_id = ? AND user_id = ?'
+                ).get(account_id, userId);
+                if (account) {
+                    resolvedAccountId = account.id;
+                }
+            }
+        }
+
+        // Resolve recurring_expense_id: if it's a frontend ID (string like "expense-123"),
+        // look up the database ID from recurring_expenses.frontend_id
+        let resolvedExpenseId = null;
+        if (recurring_expense_id) {
+            if (typeof recurring_expense_id === 'number' || /^\d+$/.test(recurring_expense_id)) {
+                // It's already a numeric database ID
+                resolvedExpenseId = parseInt(recurring_expense_id, 10);
+            } else {
+                // It's a frontend ID - look up the database ID
+                const expense = db.prepare(
+                    'SELECT id FROM recurring_expenses WHERE frontend_id = ? AND user_id = ?'
+                ).get(recurring_expense_id, userId);
+                if (expense) {
+                    resolvedExpenseId = expense.id;
+                }
+            }
+        }
+
         // Create transaction
         const result = db.prepare(`
             INSERT INTO transactions (
@@ -1421,24 +1457,24 @@ app.post('/api/transactions', authenticateToken, (req, res) => {
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
             userId,
-            account_id || null,
+            resolvedAccountId,
             transaction_type,
             category || null,
             description || null,
             amount,
             transaction_date,
-            recurring_expense_id ? 1 : 0,
-            recurring_expense_id || null,
+            resolvedExpenseId ? 1 : 0,
+            resolvedExpenseId,
             status,
             budget_amount || null,
             notes || null
         );
 
         // Update account balance if status is completed
-        if (status === 'completed' && account_id) {
+        if (status === 'completed' && resolvedAccountId) {
             const balanceChange = transaction_type === 'income' ? amount : -amount;
             db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?')
-                .run(balanceChange, account_id);
+                .run(balanceChange, resolvedAccountId);
         }
 
         const transaction = db.prepare('SELECT * FROM transactions WHERE id = ?').get(result.lastInsertRowid);
