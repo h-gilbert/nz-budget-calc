@@ -977,6 +977,119 @@ app.delete('/api/recurring-expenses/:id', authenticateToken, (req, res) => {
     }
 });
 
+// Pay an expense early (before its due date)
+app.post('/api/recurring-expenses/:id/pay-early', authenticateToken, (req, res) => {
+    try {
+        const userId = req.user.userId;
+        const expenseId = req.params.id;
+        const { amount, payment_date, notes } = req.body;
+
+        // Validate required fields
+        if (!amount || !payment_date) {
+            return res.status(400).json({ error: 'amount and payment_date are required' });
+        }
+
+        // Verify expense exists and belongs to user
+        const expense = db.prepare(`
+            SELECT re.*, a.current_balance as account_balance, a.name as account_name
+            FROM recurring_expenses re
+            LEFT JOIN accounts a ON re.account_id = a.id
+            WHERE re.id = ? AND re.user_id = ?
+        `).get(expenseId, userId);
+
+        if (!expense) {
+            return res.status(404).json({ error: 'Recurring expense not found' });
+        }
+
+        // Validate it's an active automatic bill (not a budget envelope)
+        if (!expense.is_active) {
+            return res.status(400).json({ error: 'Cannot pay an inactive expense' });
+        }
+
+        if (expense.expense_type === 'budget') {
+            return res.status(400).json({ error: 'Budget envelopes should be logged via manual expense tracking, not paid early' });
+        }
+
+        if (expense.payment_mode !== 'automatic') {
+            return res.status(400).json({ error: 'Only automatic expenses can be paid early. Manual expenses should be logged via the Log Expense feature.' });
+        }
+
+        // Create transaction
+        const result = db.prepare(`
+            INSERT INTO transactions (
+                user_id, account_id, transaction_type, category, description,
+                amount, transaction_date, is_recurring, recurring_expense_id,
+                status, budget_amount, notes
+            ) VALUES (?, ?, 'expense', ?, ?, ?, ?, 1, ?, 'completed', ?, ?)
+        `).run(
+            userId,
+            expense.account_id,
+            expense.description,
+            expense.description,
+            amount,
+            payment_date,
+            expense.id,
+            expense.amount,
+            notes || null
+        );
+
+        // Deduct from account
+        if (expense.account_id) {
+            db.prepare('UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?')
+                .run(amount, expense.account_id);
+        }
+
+        // Calculate and update next due date (or deactivate for one-off)
+        let next_due_date = null;
+        if (expense.frequency === 'one-off') {
+            // One-off expense: mark as inactive
+            db.prepare('UPDATE recurring_expenses SET is_active = 0 WHERE id = ?')
+                .run(expense.id);
+        } else {
+            // Recurring expense: advance to next due date
+            next_due_date = calculateNextDueDate(
+                expense.frequency,
+                expense.due_day_of_week,
+                expense.due_day_of_month,
+                expense.due_date
+            );
+            db.prepare('UPDATE recurring_expenses SET next_due_date = ? WHERE id = ?')
+                .run(next_due_date, expense.id);
+        }
+
+        // Get updated account balance
+        let new_balance = null;
+        if (expense.account_id) {
+            const account = db.prepare('SELECT current_balance FROM accounts WHERE id = ?')
+                .get(expense.account_id);
+            new_balance = account?.current_balance;
+        }
+
+        // Return the created transaction
+        const transaction = db.prepare('SELECT * FROM transactions WHERE id = ?')
+            .get(result.lastInsertRowid);
+
+        res.json({
+            message: 'Expense paid early successfully',
+            transaction,
+            expense: {
+                id: expense.id,
+                description: expense.description,
+                next_due_date,
+                is_active: expense.frequency === 'one-off' ? 0 : 1
+            },
+            account: {
+                id: expense.account_id,
+                name: expense.account_name,
+                new_balance
+            }
+        });
+    } catch (error) {
+        console.error('Pay expense early error:', error);
+        res.status(500).json({ error: 'Server error paying expense early' });
+    }
+});
+
 // Recalculate next due dates for all active expenses (maintenance endpoint)
 app.post('/api/recurring-expenses/recalculate', authenticateToken, (req, res) => {
     try {
@@ -1323,6 +1436,7 @@ function generateExpenseOccurrences(expense, startDate, endDate) {
                 payment_mode: expense.payment_mode,
                 frequency: expense.frequency,
                 account_name: expense.account_name,
+                account_balance: expense.account_balance,
                 account_id: expense.account_id
             });
         }
@@ -1400,6 +1514,7 @@ app.get('/api/transactions/upcoming', authenticateToken, (req, res) => {
                 re.due_day_of_month,
                 re.due_date,
                 a.name as account_name,
+                a.current_balance as account_balance,
                 re.account_id
             FROM recurring_expenses re
             LEFT JOIN accounts a ON re.account_id = a.id

@@ -26,8 +26,12 @@
       <div
         v-for="item in displayItems"
         :key="`${item.item_type}-${item.id}`"
-        class="flex items-center justify-between p-3 rounded-xl hover:bg-slate-50 transition-colors"
-        :class="isPastDue(item.due_date) ? 'bg-red-50' : ''"
+        @click="handleItemClick(item)"
+        class="flex items-center justify-between p-3 rounded-xl transition-colors"
+        :class="[
+          isPastDue(item.due_date) ? 'bg-red-50 hover:bg-red-100' : 'hover:bg-slate-100',
+          item.item_type === 'expense' ? 'cursor-pointer' : ''
+        ]"
       >
         <div class="flex items-center gap-3">
           <!-- Icon -->
@@ -112,6 +116,16 @@ const props = defineProps({
     default: false
   }
 })
+
+const emit = defineEmits(['pay-early'])
+
+// Handle clicking on an upcoming item
+function handleItemClick(item) {
+  // Only allow clicking on expense items (not transfers)
+  if (item.item_type === 'expense') {
+    emit('pay-early', item)
+  }
+}
 
 const maxItems = 5
 const showAll = ref(false)

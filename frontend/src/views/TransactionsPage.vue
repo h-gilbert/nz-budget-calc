@@ -77,6 +77,7 @@
               :items="budgetStore.upcomingItems"
               :days="30"
               :loading="upcomingLoading"
+              @pay-early="handlePayEarly"
             />
           </div>
           <div>
@@ -196,6 +197,13 @@
       @save="handleSaveTransaction"
     />
 
+    <EarlyPaymentModal
+      :show="showEarlyPaymentModal"
+      :expense="selectedExpenseForPayment"
+      @close="showEarlyPaymentModal = false; selectedExpenseForPayment = null"
+      @confirm="handleConfirmEarlyPayment"
+    />
+
     <!-- Delete Confirmation -->
     <Teleport to="body">
       <Transition name="modal">
@@ -237,6 +245,7 @@ import BudgetVsActualCard from '@/components/transactions/BudgetVsActualCard.vue
 import ManualExpenseModal from '@/components/transactions/ManualExpenseModal.vue'
 import LumpSumTransferModal from '@/components/transactions/LumpSumTransferModal.vue'
 import TransactionEditModal from '@/components/transactions/TransactionEditModal.vue'
+import EarlyPaymentModal from '@/components/transactions/EarlyPaymentModal.vue'
 
 const budgetStore = useBudgetStore()
 
@@ -257,10 +266,12 @@ const processingTransfers = ref(false)
 // Modal states
 const showManualExpenseModal = ref(false)
 const showLumpSumTransferModal = ref(false)
+const showEarlyPaymentModal = ref(false)
 const showEditModal = ref(false)
 const showDeleteConfirm = ref(false)
 const editingTransaction = ref(null)
 const deletingTransaction = ref(null)
+const selectedExpenseForPayment = ref(null)
 
 // Current filters
 const currentFilters = ref({})
@@ -441,6 +452,25 @@ async function handleProcessDueTransfers() {
     alert('Failed to process due transfers: ' + error.message)
   } finally {
     processingTransfers.value = false
+  }
+}
+
+// Handle pay early from upcoming schedule card
+function handlePayEarly(item) {
+  selectedExpenseForPayment.value = item
+  showEarlyPaymentModal.value = true
+}
+
+// Handle confirm early payment
+async function handleConfirmEarlyPayment(data) {
+  try {
+    await budgetStore.payExpenseEarly(data.expenseId, data.amount, data.date, data.notes)
+    showEarlyPaymentModal.value = false
+    selectedExpenseForPayment.value = null
+    // Data is already reloaded by store action
+  } catch (error) {
+    console.error('Failed to pay expense early:', error)
+    alert('Failed to pay expense early: ' + error.message)
   }
 }
 </script>

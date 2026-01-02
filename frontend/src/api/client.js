@@ -136,6 +136,14 @@ export const expenseAPI = {
 
   async recalculateDates() {
     return apiClient.post('/recurring-expenses/recalculate')
+  },
+
+  async payEarly(expenseId, { amount, payment_date, notes }) {
+    return apiClient.post(`/recurring-expenses/${expenseId}/pay-early`, {
+      amount,
+      payment_date,
+      notes
+    })
   }
 }
 

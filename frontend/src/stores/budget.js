@@ -2567,6 +2567,26 @@ export const useBudgetStore = defineStore('budget', () => {
     }
   }
 
+  // Pay an expense early (before its due date)
+  async function payExpenseEarly(expenseId, amount, date, notes = '') {
+    try {
+      const response = await expenseAPI.payEarly(expenseId, {
+        amount,
+        payment_date: date,
+        notes
+      })
+      // Reload transactions and upcoming to reflect changes
+      await loadTransactions()
+      await loadUpcoming()
+      // Refresh account balances to show updated totals
+      await refreshAccountBalances()
+      return response
+    } catch (error) {
+      console.error('Failed to pay expense early:', error)
+      throw error
+    }
+  }
+
   // Sync transfer schedules from calculated recommendations
   async function syncTransferSchedules() {
     try {
@@ -2726,6 +2746,7 @@ export const useBudgetStore = defineStore('budget', () => {
     logManualExpense,
     addFundsToAccount,
     processDueExpenses,
+    payExpenseEarly,
     refreshAccountBalances,
 
     // Transfer actions
