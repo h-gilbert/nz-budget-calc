@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
-import { budgetAPI, transactionAPI, transferAPI } from '@/api/client'
+import { budgetAPI, transactionAPI, transferAPI, expenseAPI } from '@/api/client'
 
 // localStorage key for persisting budget data before login
 const LOCAL_STORAGE_KEY = 'nz-budget-calculator-data'
