@@ -74,6 +74,15 @@
             >
               Transactions
             </router-link>
+            <router-link
+              to="/savings"
+              class="px-4 py-2 rounded-xl text-sm font-medium transition-colors"
+              :class="$route.path === '/savings'
+                ? 'bg-blue-50 text-blue-700'
+                : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'"
+            >
+              Savings
+            </router-link>
           </nav>
           <template v-if="userStore.isAuthenticated">
             <!-- User Menu -->
@@ -256,6 +265,19 @@
                     <path d="M16.5 6.5h-1v8.75a1.25 1.25 0 102.5 0V8a1.5 1.5 0 00-1.5-1.5z" />
                   </svg>
                   Transactions
+                </router-link>
+                <router-link
+                  to="/savings"
+                  @click="showMobileMenu = false"
+                  class="flex items-center gap-3 px-4 py-3 rounded-xl text-base font-medium transition-colors"
+                  :class="$route.path === '/savings'
+                    ? 'bg-blue-50 text-blue-700'
+                    : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'"
+                >
+                  <svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                    <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.798 7.45c.512-.67 1.135-.95 1.702-.95s1.19.28 1.702.95a.75.75 0 001.192-.91C12.637 5.55 11.596 5 10.5 5s-2.137.55-2.894 1.54A5.205 5.205 0 006.83 8H5.75a.75.75 0 000 1.5h.77a6.333 6.333 0 000 1h-.77a.75.75 0 000 1.5h1.08c.183.528.442 1.023.776 1.46.757.99 1.798 1.54 2.894 1.54s2.137-.55 2.894-1.54a.75.75 0 00-1.192-.91c-.512.67-1.135.95-1.702.95s-1.19-.28-1.702-.95a3.505 3.505 0 01-.343-.55h1.795a.75.75 0 000-1.5H8.026a4.835 4.835 0 010-1h2.224a.75.75 0 000-1.5H8.455c.098-.195.212-.38.343-.55z" clip-rule="evenodd" />
+                  </svg>
+                  Savings
                 </router-link>
               </div>
 

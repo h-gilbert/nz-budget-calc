@@ -23,6 +23,12 @@
         <span class="font-mono text-teal-600">-${{ formatMoney(recommendations.totalAcceleration) }}</span>
       </div>
 
+      <!-- Savings Contributions -->
+      <div v-if="recommendations.totalSavingsContributions > 0" class="flex justify-between items-center">
+        <span class="text-slate-600">Savings</span>
+        <span class="font-mono text-blue-600">-${{ formatMoney(recommendations.totalSavingsContributions) }}</span>
+      </div>
+
       <div class="h-px bg-slate-100"></div>
 
       <!-- Remaining -->

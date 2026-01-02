@@ -93,6 +93,15 @@
                   Log Manual Expense
                 </button>
                 <button
+                  @click="showLumpSumTransferModal = true"
+                  class="w-full px-4 py-3 text-left text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 rounded-xl transition-colors flex items-center gap-3"
+                >
+                  <svg class="w-5 h-5 text-emerald-500" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                    <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm.75-11.25a.75.75 0 00-1.5 0v4.59L7.3 9.24a.75.75 0 00-1.1 1.02l3.25 3.5a.75.75 0 001.1 0l3.25-3.5a.75.75 0 10-1.1-1.02l-1.95 2.1V6.75z" clip-rule="evenodd" />
+                  </svg>
+                  Add Funds to Account
+                </button>
+                <button
                   @click="handleProcessDue"
                   :disabled="processingDue"
                   class="w-full px-4 py-3 text-left text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 rounded-xl transition-colors flex items-center gap-3 disabled:opacity-50"
@@ -174,6 +183,12 @@
       @save="handleLogExpense"
     />
 
+    <LumpSumTransferModal
+      :show="showLumpSumTransferModal"
+      @close="showLumpSumTransferModal = false"
+      @save="handleAddFunds"
+    />
+
     <TransactionEditModal
       :show="showEditModal"
       :transaction="editingTransaction"
@@ -220,6 +235,7 @@ import TransactionList from '@/components/transactions/TransactionList.vue'
 import UpcomingScheduleCard from '@/components/transactions/UpcomingScheduleCard.vue'
 import BudgetVsActualCard from '@/components/transactions/BudgetVsActualCard.vue'
 import ManualExpenseModal from '@/components/transactions/ManualExpenseModal.vue'
+import LumpSumTransferModal from '@/components/transactions/LumpSumTransferModal.vue'
 import TransactionEditModal from '@/components/transactions/TransactionEditModal.vue'
 
 const budgetStore = useBudgetStore()
@@ -240,6 +256,7 @@ const processingTransfers = ref(false)
 
 // Modal states
 const showManualExpenseModal = ref(false)
+const showLumpSumTransferModal = ref(false)
 const showEditModal = ref(false)
 const showDeleteConfirm = ref(false)
 const editingTransaction = ref(null)
@@ -329,6 +346,19 @@ async function handleLogExpense(data) {
   } catch (error) {
     console.error('Failed to log expense:', error)
     alert('Failed to log expense: ' + error.message)
+  }
+}
+
+// Handle add funds to account
+async function handleAddFunds(data) {
+  try {
+    await budgetStore.addFundsToAccount(data.accountId, data.amount, data.date, data.notes)
+    showLumpSumTransferModal.value = false
+    await loadTransactions(currentFilters.value)
+    await loadUpcoming()
+  } catch (error) {
+    console.error('Failed to add funds:', error)
+    alert('Failed to add funds: ' + error.message)
   }
 }
 

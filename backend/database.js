@@ -183,6 +183,19 @@ function initializeDatabase() {
             db.exec(`ALTER TABLE accounts ADD COLUMN budget_id INTEGER REFERENCES budget_data(id) ON DELETE CASCADE`);
             console.log('✓ budget_id column added');
         }
+
+        // Savings account columns
+        if (!accountTableInfo.some(col => col.name === 'savings_interest_rate')) {
+            console.log('Adding savings_interest_rate column to accounts table...');
+            db.exec(`ALTER TABLE accounts ADD COLUMN savings_interest_rate REAL`);
+            console.log('✓ savings_interest_rate column added');
+        }
+
+        if (!accountTableInfo.some(col => col.name === 'savings_weekly_contribution')) {
+            console.log('Adding savings_weekly_contribution column to accounts table...');
+            db.exec(`ALTER TABLE accounts ADD COLUMN savings_weekly_contribution REAL`);
+            console.log('✓ savings_weekly_contribution column added');
+        }
     } catch (error) {
         console.error('Account table migration error:', error);
     }

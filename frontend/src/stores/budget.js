@@ -249,19 +249,119 @@ export const useBudgetStore = defineStore('budget', () => {
     return expenses.value.filter(e => e.accountId === accountId)
   }
 
-  function addAccount() {
+  function addAccount(type = 'expense') {
     accountCount.value++
+    const isSavings = type === 'savings'
+
     accounts.value.unshift({
       id: `account-${accountCount.value}`,
       name: '',
+      type: type, // 'expense' or 'savings'
       balance: 0,
+      // Expense account fields
       accelerationAmount: 0,
-      accelerationBufferWeeks: 0 // Extra weeks to continue accelerating after equilibrium
+      accelerationBufferWeeks: 0, // Extra weeks to continue accelerating after equilibrium
+      // Savings account fields (only used when type === 'savings')
+      savingsGoalTarget: isSavings ? null : undefined,
+      savingsGoalDeadline: isSavings ? null : undefined,
+      savingsInterestRate: isSavings ? null : undefined,
+      savingsWeeklyContribution: isSavings ? 0 : undefined
     })
   }
 
   function findAccountById(accountId) {
     return accounts.value.find(a => a.id === accountId)
+  }
+
+  // Get all savings accounts
+  function getSavingsAccounts() {
+    return accounts.value.filter(a => a.type === 'savings')
+  }
+
+  // Get all expense accounts (non-savings)
+  function getExpenseAccounts() {
+    return accounts.value.filter(a => a.type !== 'savings')
+  }
+
+  // Calculate savings projection for a savings account
+  function calculateSavingsProjection(accountId, weeksToProject = 52) {
+    const account = findAccountById(accountId)
+    if (!account || account.type !== 'savings') return null
+
+    const balance = parseFloat(account.balance) || 0
+    const weeklyContribution = parseFloat(account.savingsWeeklyContribution) || 0
+    const goalTarget = parseFloat(account.savingsGoalTarget) || null
+    const interestRate = parseFloat(account.savingsInterestRate) || 0
+    const goalDeadline = account.savingsGoalDeadline
+
+    const monthlyRate = interestRate / 12
+    let projectedBalance = balance
+    const projectionData = []
+    let weeksToGoal = null
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+
+    for (let week = 0; week <= weeksToProject; week++) {
+      projectedBalance += weeklyContribution
+
+      // Apply monthly interest (every ~4 weeks)
+      if (week > 0 && week % 4 === 0 && monthlyRate > 0) {
+        projectedBalance *= (1 + monthlyRate)
+      }
+
+      const weekDate = new Date(today)
+      weekDate.setDate(today.getDate() + (week * 7))
+
+      projectionData.push({
+        week,
+        balance: roundCurrency(projectedBalance),
+        date: formatDateLocal(weekDate)
+      })
+
+      if (goalTarget && !weeksToGoal && projectedBalance >= goalTarget) {
+        weeksToGoal = week
+      }
+    }
+
+    // Calculate required weekly rate to meet deadline
+    let requiredRate = null
+    let projectedGoalDate = null
+
+    if (goalTarget && goalDeadline) {
+      const deadline = parseDateLocal(goalDeadline)
+      if (deadline) {
+        const weeksRemaining = Math.max(1, Math.ceil((deadline - today) / (7 * 24 * 60 * 60 * 1000)))
+        const amountNeeded = goalTarget - balance
+        if (amountNeeded > 0) {
+          requiredRate = roundCurrency(amountNeeded / weeksRemaining)
+        }
+      }
+    }
+
+    if (weeksToGoal !== null) {
+      const goalDate = new Date(today)
+      goalDate.setDate(today.getDate() + (weeksToGoal * 7))
+      projectedGoalDate = formatDateLocal(goalDate)
+    }
+
+    const progressPercent = goalTarget ? roundCurrency((balance / goalTarget) * 100) : null
+
+    return {
+      accountId,
+      accountName: account.name,
+      currentBalance: balance,
+      goalTarget,
+      goalDeadline,
+      interestRate,
+      projection: projectionData,
+      weeksToGoal,
+      projectedGoalDate,
+      projectedFinalBalance: roundCurrency(projectedBalance),
+      requiredRate,
+      currentRate: weeklyContribution,
+      progressPercent,
+      isOnTrack: requiredRate === null || weeklyContribution >= requiredRate
+    }
   }
 
   function removeAccount(id) {
@@ -275,8 +375,9 @@ export const useBudgetStore = defineStore('budget', () => {
     const account = accounts.value.find(a => a.id === id)
     if (account) {
       // Handle NaN values for numeric fields
-      if ((field === 'balance' || field === 'accelerationAmount' || field === 'accelerationBufferWeeks') && (isNaN(value) || value === null || value === undefined)) {
-        account[field] = 0
+      const numericFields = ['balance', 'accelerationAmount', 'accelerationBufferWeeks', 'savingsWeeklyContribution', 'savingsGoalTarget', 'savingsInterestRate']
+      if (numericFields.includes(field) && (isNaN(value) || value === null || value === undefined)) {
+        account[field] = field === 'savingsGoalTarget' || field === 'savingsInterestRate' ? null : 0
       } else {
         account[field] = value
       }
@@ -588,16 +689,27 @@ export const useBudgetStore = defineStore('budget', () => {
       expenseCount.value = expenses.value.length
     }
 
-    // Transform accounts (id, name, balance, accelerationAmount, accelerationBufferWeeks)
+    // Transform accounts (id, name, balance, accelerationAmount, accelerationBufferWeeks, savings fields)
     const backendAccounts = data.accounts || []
     if (Array.isArray(backendAccounts)) {
-      accounts.value = backendAccounts.map((account, index) => ({
-        id: account.id || `account-${Date.now()}-${index}`,
-        name: account.name || '',
-        balance: roundCurrency(account.balance),
-        accelerationAmount: parseFloat(account.accelerationAmount) || 0,
-        accelerationBufferWeeks: parseInt(account.accelerationBufferWeeks) || 0
-      }))
+      accounts.value = backendAccounts.map((account, index) => {
+        const accountType = account.type || account.account_type || 'expense'
+        const isSavings = accountType === 'savings'
+
+        return {
+          id: account.id || `account-${Date.now()}-${index}`,
+          name: account.name || '',
+          type: accountType,
+          balance: roundCurrency(account.balance || account.current_balance),
+          accelerationAmount: parseFloat(account.accelerationAmount) || 0,
+          accelerationBufferWeeks: parseInt(account.accelerationBufferWeeks) || 0,
+          // Savings fields
+          savingsGoalTarget: isSavings ? (account.savingsGoalTarget || account.target_balance || null) : undefined,
+          savingsGoalDeadline: isSavings ? (account.savingsGoalDeadline || account.target_date || null) : undefined,
+          savingsInterestRate: isSavings ? (account.savingsInterestRate || account.savings_interest_rate || null) : undefined,
+          savingsWeeklyContribution: isSavings ? (parseFloat(account.savingsWeeklyContribution || account.savings_weekly_contribution) || 0) : undefined
+        }
+      })
       accountCount.value = accounts.value.length
     }
 
@@ -965,14 +1077,25 @@ export const useBudgetStore = defineStore('budget', () => {
       }
     })
 
-    // Transform accounts (id, name, balance, accelerationAmount, accelerationBufferWeeks)
-    const transformedAccounts = accounts.value.map(account => ({
-      id: account.id,
-      name: account.name || '',
-      balance: account.balance || 0,
-      accelerationAmount: account.accelerationAmount || 0,
-      accelerationBufferWeeks: account.accelerationBufferWeeks || 0
-    }))
+    // Transform accounts (id, name, balance, accelerationAmount, accelerationBufferWeeks, savings fields)
+    const transformedAccounts = accounts.value.map(account => {
+      const isSavings = account.type === 'savings'
+      return {
+        id: account.id,
+        name: account.name || '',
+        type: account.type || 'expense',
+        balance: account.balance || 0,
+        accelerationAmount: account.accelerationAmount || 0,
+        accelerationBufferWeeks: account.accelerationBufferWeeks || 0,
+        // Savings fields (only include for savings accounts)
+        ...(isSavings && {
+          savingsGoalTarget: account.savingsGoalTarget || null,
+          savingsGoalDeadline: account.savingsGoalDeadline || null,
+          savingsInterestRate: account.savingsInterestRate || null,
+          savingsWeeklyContribution: account.savingsWeeklyContribution || 0
+        })
+      }
+    })
 
     // Get all current budget data for saving in backend format
     return {
@@ -1886,6 +2009,132 @@ export const useBudgetStore = defineStore('budget', () => {
     return results
   }
 
+  // Calculate catch-up lump sum: how much to transfer RIGHT NOW to reach equilibrium
+  // This calculates the minimum one-time transfer needed so that equilibrium-only
+  // weekly transfers will sustain the account forever (balance never goes negative)
+  function calculateCatchupLumpSum(weeksToProject = 104) {
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+
+    const allExpenses = expenses.value
+    const accountGroups = {}
+
+    // Group expenses by account
+    for (const expense of allExpenses) {
+      const accountId = expense.accountId || 'unallocated'
+      if (!accountGroups[accountId]) accountGroups[accountId] = []
+      accountGroups[accountId].push(expense)
+    }
+
+    const results = []
+    let totalLumpSum = 0
+
+    for (const [accountId, expensesInAccount] of Object.entries(accountGroups)) {
+      const account = accountId !== 'unallocated' ? findAccountById(accountId) : null
+      if (!account) continue
+
+      const accountBalance = parseFloat(account.balance) || 0
+
+      // Calculate weekly equilibrium (NO acceleration)
+      const weeklyEquilibrium = expensesInAccount.reduce((sum, e) => sum + getWeeklyAmount(e), 0)
+
+      if (weeklyEquilibrium <= 0) continue
+
+      // Separate expenses by type (same pattern as calculateUnifiedExpenseProjection)
+      const weeklyExpenses = expensesInAccount.filter(e => e.frequency === 'weekly')
+      const fortnightlyExpenses = expensesInAccount.filter(e => e.frequency === 'fortnightly')
+      const monthlyExpenses = expensesInAccount.filter(e => e.frequency === 'monthly')
+      const annualExpenses = expensesInAccount.filter(e => e.frequency === 'annually' || e.frequency === 'one-off')
+
+      const weeklyTotal = weeklyExpenses.reduce((sum, e) => sum + (parseFloat(e.amount) || 0), 0)
+      const fortnightlyTotal = fortnightlyExpenses.reduce((sum, e) => sum + (parseFloat(e.amount) || 0), 0)
+
+      // Simulate week-by-week with ONLY equilibrium transfers
+      let runningBalance = accountBalance
+      let minBalance = accountBalance
+      let minBalanceWeek = 0
+
+      for (let week = 0; week < weeksToProject; week++) {
+        const weekStart = new Date(today)
+        weekStart.setDate(today.getDate() + (week * 7))
+        const weekEnd = new Date(weekStart)
+        weekEnd.setDate(weekStart.getDate() + 6)
+
+        // Calculate expenses for this week
+        let weekExpenses = weeklyTotal
+
+        // Fortnightly (every 2 weeks)
+        if (fortnightlyExpenses.length > 0 && week % 2 === 0) {
+          weekExpenses += fortnightlyTotal
+        }
+
+        // Monthly expenses
+        for (const expense of monthlyExpenses) {
+          const dueDay = expense.dueDay || 1
+          for (let d = 0; d < 7; d++) {
+            const checkDate = new Date(weekStart)
+            checkDate.setDate(weekStart.getDate() + d)
+            if (checkDate.getDate() === dueDay) {
+              weekExpenses += parseFloat(expense.amount) || 0
+              break
+            }
+          }
+        }
+
+        // Annual/one-off expenses
+        for (const expense of annualExpenses) {
+          if (expense.frequency === 'one-off' && expense.date) {
+            const dueDate = parseDateLocal(expense.date)
+            if (dueDate && dueDate >= weekStart && dueDate <= weekEnd) {
+              weekExpenses += parseFloat(expense.amount) || 0
+            }
+          } else if (expense.dueDate) {
+            const baseDueDate = parseDateLocal(expense.dueDate)
+            if (!baseDueDate) continue
+            for (let yearOffset = 0; yearOffset <= 3; yearOffset++) {
+              const dueDate = new Date(baseDueDate)
+              dueDate.setFullYear(baseDueDate.getFullYear() + yearOffset)
+              if (dueDate <= today) continue
+              if (dueDate >= weekStart && dueDate <= weekEnd) {
+                weekExpenses += parseFloat(expense.amount) || 0
+              }
+            }
+          }
+        }
+
+        // Apply equilibrium transfer and expenses
+        runningBalance += weeklyEquilibrium
+        runningBalance -= weekExpenses
+
+        // Track minimum balance
+        if (runningBalance < minBalance) {
+          minBalance = runningBalance
+          minBalanceWeek = week + 1
+        }
+      }
+
+      // Lump sum needed = abs(minimum) if it goes negative, else 0
+      const lumpSumNeeded = minBalance < 0 ? Math.abs(minBalance) : 0
+      totalLumpSum += lumpSumNeeded
+
+      results.push({
+        accountId,
+        accountName: account.name,
+        currentBalance: Math.round(accountBalance * 100) / 100,
+        weeklyEquilibrium: Math.round(weeklyEquilibrium * 100) / 100,
+        minBalance: Math.round(minBalance * 100) / 100,
+        minBalanceWeek,
+        lumpSumNeeded: Math.ceil(lumpSumNeeded * 100) / 100,
+        isAlreadyAtEquilibrium: lumpSumNeeded === 0
+      })
+    }
+
+    return {
+      accounts: results,
+      totalLumpSum: Math.ceil(totalLumpSum * 100) / 100
+    }
+  }
+
   // Calculate buffer needed for monthly/fortnightly expenses
   // These expenses are "lumpy" within a month - we need enough buffer to handle
   // weeks where multiple expenses cluster together
@@ -2051,18 +2300,26 @@ export const useBudgetStore = defineStore('budget', () => {
     const totalWeeklyExpenses = expenses.value
       .reduce((sum, e) => sum + getWeeklyAmount(e), 0)
 
+    // Get expense accounts only (exclude savings)
+    const expenseAccounts = getExpenseAccounts()
+    const savingsAccountsList = getSavingsAccounts()
+
     // Available for acceleration = take-home - all expenses
     const availableForAcceleration = Math.max(0, weeklyNet - totalWeeklyExpenses)
 
-    // Total user-set acceleration across all accounts
-    const totalAcceleration = accounts.value
+    // Total user-set acceleration across expense accounts only
+    const totalAcceleration = expenseAccounts
       .reduce((sum, acc) => sum + (parseFloat(acc.accelerationAmount) || 0), 0)
 
-    // Validate: acceleration cannot exceed available
+    // Total savings contributions
+    const totalSavingsContributions = savingsAccountsList
+      .reduce((sum, acc) => sum + (parseFloat(acc.savingsWeeklyContribution) || 0), 0)
+
+    // Validate: acceleration cannot exceed available (before savings)
     const isAccelerationValid = totalAcceleration <= availableForAcceleration
 
-    // Build per-account recommendations
-    const recommendations = accounts.value.map(account => {
+    // Build per-account recommendations for expense accounts
+    const recommendations = expenseAccounts.map(account => {
       // Weekly equilibrium = ALL expenses for this account (weekly-ised)
       const weeklyEquilibrium = getAccountWeeklyLoad(account.id)
       const acceleration = parseFloat(account.accelerationAmount) || 0
@@ -2077,6 +2334,7 @@ export const useBudgetStore = defineStore('budget', () => {
         account,
         accountId: account.id,
         accountName: account.name,
+        accountType: 'expense',
         currentBalance: parseFloat(account.balance) || 0,
         weeklyEquilibrium,
         // Keep regularEquilibrium as alias for backward compatibility
@@ -2087,7 +2345,31 @@ export const useBudgetStore = defineStore('budget', () => {
       }
     })
 
-    // Total recommended across all accounts
+    // Add savings account recommendations
+    savingsAccountsList.forEach(account => {
+      const contribution = parseFloat(account.savingsWeeklyContribution) || 0
+      if (contribution > 0) {
+        recommendations.push({
+          account,
+          accountId: account.id,
+          accountName: account.name,
+          accountType: 'savings',
+          currentBalance: parseFloat(account.balance) || 0,
+          weeklyEquilibrium: 0, // Savings don't have equilibrium
+          regularEquilibrium: 0,
+          acceleration: 0,
+          recommendedTransfer: contribution,
+          linkedExpenses: [],
+          // Savings-specific fields
+          savingsGoalTarget: account.savingsGoalTarget,
+          savingsProgressPercent: account.savingsGoalTarget
+            ? roundCurrency((account.balance / account.savingsGoalTarget) * 100)
+            : null
+        })
+      }
+    })
+
+    // Total recommended across all accounts (expense + savings)
     const totalRecommended = recommendations
       .reduce((sum, r) => sum + r.recommendedTransfer, 0)
 
@@ -2098,6 +2380,7 @@ export const useBudgetStore = defineStore('budget', () => {
       totalRegularEquilibrium: totalWeeklyExpenses,
       totalLumpSumContributions: 0,
       totalAcceleration,
+      totalSavingsContributions,
       availableForAcceleration,
       isAccelerationValid,
       totalRecommended,
@@ -2221,6 +2504,26 @@ export const useBudgetStore = defineStore('budget', () => {
       transaction_date: transactionDate,
       recurring_expense_id: expense.id,
       budget_amount: weeklyBudget,
+      notes: notes
+    })
+  }
+
+  // Add funds to an account (lump sum transfer from external source)
+  async function addFundsToAccount(accountId, amount, date = null, notes = '') {
+    const account = accounts.value.find(a => a.id === accountId)
+    if (!account) {
+      throw new Error('Account not found')
+    }
+
+    const transactionDate = date || formatDateLocal(new Date())
+
+    return createTransaction({
+      account_id: accountId,
+      transaction_type: 'income',
+      category: 'Transfer',
+      description: `Funds added to ${account.name}`,
+      amount: amount,
+      transaction_date: transactionDate,
       notes: notes
     })
   }
@@ -2367,6 +2670,9 @@ export const useBudgetStore = defineStore('budget', () => {
     removeAccount,
     updateAccount,
     findAccountById,
+    getSavingsAccounts,
+    getExpenseAccounts,
+    calculateSavingsProjection,
     setResults,
     clearResults,
     reset,
@@ -2386,6 +2692,7 @@ export const useBudgetStore = defineStore('budget', () => {
     calculateEquilibriumDate,
     calculateRegularExpenseBuffer,
     calculateUnifiedExpenseProjection,
+    calculateCatchupLumpSum,
     getAccountRegularEquilibrium,
     getAccountLumpSumContribution,
     calculateTransferRecommendations,
@@ -2417,6 +2724,7 @@ export const useBudgetStore = defineStore('budget', () => {
     updateTransaction,
     deleteTransaction,
     logManualExpense,
+    addFundsToAccount,
     processDueExpenses,
     refreshAccountBalances,
 

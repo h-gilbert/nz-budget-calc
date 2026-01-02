@@ -21,6 +21,11 @@ const routes = [
     name: 'Transactions',
     component: () => import('@/views/TransactionsPage.vue')
   },
+  {
+    path: '/savings',
+    name: 'Savings',
+    component: () => import('@/views/SavingsPage.vue')
+  },
   // Backwards-compatible redirects
   {
     path: '/calculator',

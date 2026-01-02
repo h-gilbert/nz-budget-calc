@@ -6,3 +6,7 @@ Separate commands to run on local computer and commands to run on a server or an
 
 Please overwrite everything below this line. Don't overwrite this line or above.
 
+=== RUN ON SERVER ===
+
+docker logs budget-backend --tail 10
+

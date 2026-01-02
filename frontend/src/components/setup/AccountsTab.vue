@@ -1,19 +1,29 @@
 <template>
   <div class="space-y-4">
-    <!-- Header with Add Button -->
+    <!-- Header with Add Buttons -->
     <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
       <div>
         <h3 class="font-semibold text-slate-800">Your Accounts</h3>
-        <p class="text-sm text-slate-500">Set up your bank accounts for allocation planning</p>
+        <p class="text-sm text-slate-500">Set up your bank accounts for expense allocation and savings goals</p>
       </div>
-      <AppButton size="sm" @click="budgetStore.addAccount()" class="self-start sm:self-auto">
-        <template #icon-left>
-          <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
-            <path d="M10.75 4.75a.75.75 0 00-1.5 0v4.5h-4.5a.75.75 0 000 1.5h4.5v4.5a.75.75 0 001.5 0v-4.5h4.5a.75.75 0 000-1.5h-4.5v-4.5z" />
-          </svg>
-        </template>
-        Add Account
-      </AppButton>
+      <div class="flex gap-2 self-start sm:self-auto">
+        <AppButton size="sm" @click="budgetStore.addAccount('expense')">
+          <template #icon-left>
+            <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+              <path d="M10.75 4.75a.75.75 0 00-1.5 0v4.5h-4.5a.75.75 0 000 1.5h4.5v4.5a.75.75 0 001.5 0v-4.5h4.5a.75.75 0 000-1.5h-4.5v-4.5z" />
+            </svg>
+          </template>
+          Expense Account
+        </AppButton>
+        <AppButton size="sm" variant="secondary" class="!bg-blue-500 !text-white hover:!bg-blue-600" @click="budgetStore.addAccount('savings')">
+          <template #icon-left>
+            <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+              <path d="M10.75 4.75a.75.75 0 00-1.5 0v4.5h-4.5a.75.75 0 000 1.5h4.5v4.5a.75.75 0 001.5 0v-4.5h4.5a.75.75 0 000-1.5h-4.5v-4.5z" />
+            </svg>
+          </template>
+          Savings Account
+        </AppButton>
+      </div>
     </div>
 
     <!-- Empty State -->
@@ -25,10 +35,15 @@
         <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 21h19.5m-18-18v18m10.5-18v18m6-13.5V21M6.75 6.75h.75m-.75 3h.75m-.75 3h.75m3-6h.75m-.75 3h.75m-.75 3h.75M6.75 21v-3.375c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21M3 3h12m-.75 4.5H21m-3.75 3.75h.008v.008h-.008v-.008zm0 3h.008v.008h-.008v-.008zm0 3h.008v.008h-.008v-.008z" />
       </svg>
       <p class="text-slate-600 font-medium mb-2">No accounts yet</p>
-      <p class="text-sm text-slate-500 mb-4">Add your bank accounts to plan your money allocation</p>
-      <AppButton size="sm" @click="budgetStore.addAccount()">
-        Add Your First Account
-      </AppButton>
+      <p class="text-sm text-slate-500 mb-4">Add your bank accounts to plan your money allocation and savings</p>
+      <div class="flex gap-2 justify-center">
+        <AppButton size="sm" @click="budgetStore.addAccount('expense')">
+          Add Expense Account
+        </AppButton>
+        <AppButton size="sm" variant="secondary" class="!bg-blue-500 !text-white hover:!bg-blue-600" @click="budgetStore.addAccount('savings')">
+          Add Savings Account
+        </AppButton>
+      </div>
     </div>
 
     <!-- Account List -->

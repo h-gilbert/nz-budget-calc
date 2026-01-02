@@ -1,131 +1,140 @@
-name: Deploy to Production
+name: Build and Deploy
 
 on:
   push:
-    branches: [ main ]
-  workflow_dispatch:  # Allow manual triggering
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
 
 jobs:
-  deploy:
+  build-backend:
     runs-on: ubuntu-latest
-
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.meta.outputs.tags }}
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20'
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Build Frontend
-      run: |
-        cd frontend
-        npm ci
-        npm run build
-        ls -la dist  # Verify build output
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/budget-backend
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=
 
-    - name: Setup SSH
-      run: |
-        mkdir -p ~/.ssh
-        echo "${{ secrets.SERVER_SSH_KEY }}" > ~/.ssh/id_rsa
-        chmod 600 ~/.ssh/id_rsa
-        ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts
-        # Prevent SSH timeout during long operations
-        echo "Host *" > ~/.ssh/config
-        echo "  ServerAliveInterval 15" >> ~/.ssh/config
-        echo "  ServerAliveCountMax 20" >> ~/.ssh/config
-        echo "  TCPKeepAlive yes" >> ~/.ssh/config
-        echo "  ConnectionAttempts 3" >> ~/.ssh/config
-        chmod 600 ~/.ssh/config
+      - name: Build and push backend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
 
-    - name: Deploy to Server
-      env:
-        SERVER_USER: ${{ secrets.SERVER_USER }}
-        SERVER_HOST: ${{ secrets.SERVER_HOST }}
-        JWT_SECRET: ${{ secrets.JWT_SECRET }}
-      run: |
-        echo "🚀 Starting deployment to $SERVER_HOST..."
+  build-frontend:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.meta.outputs.tags }}
+    steps:
+      - uses: actions/checkout@v4
 
-        # Copy files to server
-        echo "📦 Copying files to server..."
-        rsync -avz --delete \
-          --exclude 'node_modules' \
-          --exclude '.git' \
-          --exclude '.github' \
-          --exclude 'frontend/node_modules' \
-          --exclude 'backend/node_modules' \
-          --exclude '*.log' \
-          --exclude '.env' \
-          --exclude '_legacy' \
-          --exclude '*.pdf' \
-          ./ ${SERVER_USER}@${SERVER_HOST}:/mnt/user/appdata/nz-budget-calculator/
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-        # Deploy on server
-        echo "🔧 Building and deploying on server..."
-        ssh ${SERVER_USER}@${SERVER_HOST} << 'ENDSSH'
-        set -e
-        cd /mnt/user/appdata/nz-budget-calculator
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/budget-frontend
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=
 
-        # Create .env if it doesn't exist
-        if [ ! -f .env ]; then
-          echo "Creating .env file..."
-          echo "JWT_SECRET=${JWT_SECRET}" > .env
-          echo "NODE_ENV=production" >> .env
-          echo "PORT=3200" >> .env
-          echo "FRONTEND_URL=https://budget.hamishgilbert.com" >> .env
-        fi
+      - name: Build and push frontend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
 
-        # Build and restart backend
-        echo "🐳 Building Docker image..."
-        docker-compose -f docker-compose.production.yml build --no-cache
+  deploy:
+    needs: [build-backend, build-frontend]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
 
-        echo "🔄 Restarting backend container..."
-        docker-compose -f docker-compose.production.yml down --timeout 30 || true
-        docker-compose -f docker-compose.production.yml up -d
+      - name: Deploy to server
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_TAILSCALE_IP }}
+          username: fred
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            set -e
+            echo "🚀 Starting deployment..."
 
-        # Wait for backend to be healthy
-        echo "⏳ Waiting for backend to be healthy..."
-        sleep 10
+            cd /opt/docker/webapps
 
-        # Check backend health
-        if curl -f http://192.168.1.2:3200/health > /dev/null 2>&1; then
-          echo "✅ Backend is healthy"
-        else
-          echo "⚠️  Backend health check failed - showing logs..."
-          docker logs --tail 30 budget-backend
-          exit 1
-        fi
+            # Pull latest images
+            echo "📦 Pulling images..."
+            docker pull ghcr.io/h-gilbert/budget-backend:latest
+            docker pull ghcr.io/h-gilbert/budget-frontend:latest
 
-        # Reload nginx
-        echo "🔄 Reloading nginx..."
-        docker exec multi-site-nginx nginx -t && docker exec multi-site-nginx nginx -s reload || echo "⚠️  nginx reload failed"
+            # Restart containers
+            echo "🔄 Restarting containers..."
+            docker compose up -d --no-deps budget-backend budget-frontend
 
-        echo "✅ Deployment complete!"
-        ENDSSH
+            # Wait and verify
+            sleep 5
+            echo "✅ Container status:"
+            docker ps --filter "name=budget" --format "table {{.Names}}\t{{.Status}}"
 
-    - name: Verify Deployment
-      run: |
-        echo "🔍 Verifying deployment..."
-        sleep 5
-        ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'ENDSSH'
-        # Show container status
-        echo "📊 Container Status:"
-        docker ps | grep budget
+            # Cleanup old images
+            docker image prune -f
 
-        # Show recent logs
-        echo ""
-        echo "📝 Recent Logs:"
-        docker logs --tail 20 budget-backend
-        ENDSSH
+            echo "✅ Deployment complete!"
 
-        echo ""
-        echo "✅ Deployment verified!"
-        echo "🌐 Access your app at: https://budget.hamishgilbert.com"
+      - name: Health check
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_TAILSCALE_IP }}
+          username: fred
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            echo "🔍 Running health checks..."
 
-    - name: Notify on Failure
-      if: failure()
-      run: |
-        echo "❌ Deployment failed! Check the logs above for details."
-        ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} \
-          "docker logs --tail 50 budget-backend" || true
+            # Check backend health
+            if curl -sf http://localhost:3200/health > /dev/null; then
+              echo "✅ Backend is healthy"
+            else
+              echo "❌ Backend health check failed"
+              docker logs --tail 30 budget-backend
+              exit 1
+            fi
+
+            echo "🌐 App available at: https://budget.hamishgilbert.com"

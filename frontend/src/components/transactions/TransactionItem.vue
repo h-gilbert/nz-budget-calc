@@ -18,17 +18,29 @@
       <div class="min-w-0 flex-1">
         <div class="flex items-center gap-2">
           <p class="font-medium text-slate-800 truncate">
-            {{ transaction.description || transaction.category || 'Transaction' }}
+            {{ displayDescription }}
           </p>
           <span
-            v-if="transaction.is_recurring"
+            v-if="showRecurringBadge"
             class="text-xs px-2 py-0.5 bg-blue-50 text-blue-600 rounded-full"
           >
             Recurring
           </span>
+          <span
+            v-if="isTransfer"
+            class="text-xs px-2 py-0.5 bg-purple-50 text-purple-600 rounded-full"
+          >
+            Transfer
+          </span>
+          <span
+            v-if="isWithdrawal"
+            class="text-xs px-2 py-0.5 bg-blue-50 text-blue-600 rounded-full"
+          >
+            Withdrawal
+          </span>
         </div>
         <p class="text-sm text-slate-500 truncate">
-          {{ transaction.category || typeLabel }} &middot; {{ formattedDate }}
+          {{ displayCategory }} &middot; {{ formattedDate }}
         </p>
       </div>
     </div>
@@ -51,13 +63,13 @@
         <p
           :class="[
             'font-semibold',
-            transaction.transaction_type === 'income' ? 'text-green-600' : 'text-slate-800'
+            amountColorClass
           ]"
         >
-          {{ transaction.transaction_type === 'income' ? '+' : '-' }}${{ formatAmount(transaction.amount) }}
+          {{ amountPrefix }}${{ formatAmount(transaction.amount) }}
         </p>
-        <p v-if="transaction.account_name" class="text-xs text-slate-400">
-          {{ transaction.account_name }}
+        <p v-if="displayAccountName" class="text-xs text-slate-400">
+          {{ displayAccountName }}
         </p>
       </div>
 
@@ -104,9 +116,82 @@ const typeLabel = computed(() => {
   const types = {
     income: 'Income',
     expense: 'Expense',
-    transfer: 'Transfer'
+    transfer: 'Transfer',
+    withdrawal: 'Withdrawal'
   }
   return types[props.transaction.transaction_type] || 'Transaction'
+})
+
+// Check if this is a transfer
+const isTransfer = computed(() => {
+  return props.transaction.transaction_type === 'transfer' || props.transaction.source_type === 'transfer'
+})
+
+// Check if this is a withdrawal (from savings account)
+const isWithdrawal = computed(() => {
+  return props.transaction.transaction_type === 'withdrawal'
+})
+
+// Show recurring badge only for bills, not for budget items
+// Budget items (like Food, Fuel) are spending envelopes - not truly "recurring" in the scheduled sense
+const showRecurringBadge = computed(() => {
+  // Don't show for transfers
+  if (isTransfer.value) return false
+  // Show only if is_recurring and expense_type is 'bill' (or null for backwards compatibility)
+  // expense_type = 'budget' means it's a spending envelope, not a recurring scheduled payment
+  return props.transaction.is_recurring && props.transaction.expense_type !== 'budget'
+})
+
+// Display description - handle transfers specially
+const displayDescription = computed(() => {
+  if (isTransfer.value && props.transaction.from_account_name && props.transaction.to_account_name) {
+    return `${props.transaction.from_account_name} → ${props.transaction.to_account_name}`
+  }
+  return props.transaction.description || props.transaction.category || 'Transaction'
+})
+
+// Display category for the subtitle
+const displayCategory = computed(() => {
+  if (isTransfer.value) {
+    return 'Transfer'
+  }
+  if (isWithdrawal.value) {
+    return 'Savings Withdrawal'
+  }
+  return props.transaction.category || typeLabel.value
+})
+
+// Amount color class based on transaction type
+const amountColorClass = computed(() => {
+  if (props.transaction.transaction_type === 'income') {
+    return 'text-green-600'
+  }
+  if (isTransfer.value) {
+    return 'text-purple-600'
+  }
+  if (isWithdrawal.value) {
+    return 'text-blue-600'
+  }
+  return 'text-slate-800'
+})
+
+// Amount prefix (+, -, or nothing for transfers)
+const amountPrefix = computed(() => {
+  if (props.transaction.transaction_type === 'income') {
+    return '+'
+  }
+  if (isTransfer.value) {
+    return '' // Transfers are neutral - money moving between accounts
+  }
+  return '-'
+})
+
+// Display account name - for transfers show the destination account
+const displayAccountName = computed(() => {
+  if (isTransfer.value) {
+    return props.transaction.to_account_name || props.transaction.account_name
+  }
+  return props.transaction.account_name
 })
 
 // Type styles
@@ -114,7 +199,8 @@ const typeStyles = computed(() => {
   const styles = {
     income: { bg: 'bg-green-50', icon: 'text-green-600' },
     expense: { bg: 'bg-red-50', icon: 'text-red-600' },
-    transfer: { bg: 'bg-blue-50', icon: 'text-blue-600' }
+    transfer: { bg: 'bg-purple-50', icon: 'text-purple-600' },
+    withdrawal: { bg: 'bg-blue-50', icon: 'text-blue-600' }
   }
   return styles[props.transaction.transaction_type] || styles.expense
 })
@@ -144,11 +230,20 @@ const TransferIcon = {
   }
 }
 
+const WithdrawalIcon = {
+  render() {
+    return h('svg', { xmlns: 'http://www.w3.org/2000/svg', viewBox: '0 0 20 20', fill: 'currentColor' }, [
+      h('path', { d: 'M1 4.25a3.733 3.733 0 012.25-.75h13.5c.844 0 1.623.279 2.25.75A2.25 2.25 0 0016.75 2H3.25A2.25 2.25 0 001 4.25zM1 7.25a3.733 3.733 0 012.25-.75h13.5c.844 0 1.623.279 2.25.75A2.25 2.25 0 0016.75 5H3.25A2.25 2.25 0 001 7.25zM7 8a1 1 0 011 1 2 2 0 104 0 1 1 0 011-1h3.75A2.25 2.25 0 0119 10.25v5.5A2.25 2.25 0 0116.75 18H3.25A2.25 2.25 0 011 15.75v-5.5A2.25 2.25 0 013.25 8H7z' })
+    ])
+  }
+}
+
 const typeIcon = computed(() => {
   const icons = {
     income: IncomeIcon,
     expense: ExpenseIcon,
-    transfer: TransferIcon
+    transfer: TransferIcon,
+    withdrawal: WithdrawalIcon
   }
   return icons[props.transaction.transaction_type] || ExpenseIcon
 })

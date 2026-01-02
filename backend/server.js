@@ -526,6 +526,10 @@ function syncAccountsToTable(userId, budgetId, accountsJson) {
         if (!account.id) continue;
         currentFrontendIds.add(account.id);
 
+        // Determine account type (default to 'expense' for backwards compatibility)
+        const accountType = account.type || 'expense';
+        const isSavings = accountType === 'savings';
+
         if (existingMap.has(account.id)) {
             // Update existing account - DO NOT overwrite current_balance
             // Balance is managed by transactions/transfers, not budget saves
@@ -533,24 +537,44 @@ function syncAccountsToTable(userId, budgetId, accountsJson) {
             db.prepare(`
                 UPDATE accounts SET
                     name = ?,
+                    account_type = ?,
+                    target_balance = ?,
+                    target_date = ?,
+                    savings_interest_rate = ?,
+                    savings_weekly_contribution = ?,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
             `).run(
                 account.name || 'Unnamed Account',
+                accountType,
+                isSavings ? (account.savingsGoalTarget || null) : null,
+                isSavings ? (account.savingsGoalDeadline || null) : null,
+                isSavings ? (account.savingsInterestRate || null) : null,
+                isSavings ? (account.savingsWeeklyContribution || null) : null,
                 dbId
             );
             frontendToDbIdMap.set(account.id, dbId);
         } else {
             // Insert new account
             const result = db.prepare(`
-                INSERT INTO accounts (user_id, budget_id, frontend_id, name, current_balance, is_expense_account)
-                VALUES (?, ?, ?, ?, ?, 1)
+                INSERT INTO accounts (
+                    user_id, budget_id, frontend_id, name, current_balance,
+                    account_type, is_expense_account,
+                    target_balance, target_date, savings_interest_rate, savings_weekly_contribution
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             `).run(
                 userId,
                 budgetId,
                 account.id,
                 account.name || 'Unnamed Account',
-                account.balance || 0
+                account.balance || 0,
+                accountType,
+                isSavings ? 0 : 1,
+                isSavings ? (account.savingsGoalTarget || null) : null,
+                isSavings ? (account.savingsGoalDeadline || null) : null,
+                isSavings ? (account.savingsInterestRate || null) : null,
+                isSavings ? (account.savingsWeeklyContribution || null) : null
             );
             frontendToDbIdMap.set(account.id, result.lastInsertRowid);
         }
@@ -1005,52 +1029,190 @@ app.get('/api/transactions', authenticateToken, (req, res) => {
             transaction_type,
             status,
             recurring_expense_id,
+            include_transfers = 'true', // Include completed transfers by default
             limit = 100,
             offset = 0
         } = req.query;
 
-        let query = 'SELECT * FROM transactions WHERE user_id = ?';
-        const params = [userId];
+        const shouldIncludeTransfers = include_transfers === 'true' && !recurring_expense_id;
+        const isTransferFilter = transaction_type === 'transfer';
+
+        // Build transaction query with JOINs for account name and expense type
+        let transactionQuery = `
+            SELECT
+                t.id,
+                t.user_id,
+                t.account_id,
+                t.transaction_type,
+                t.category,
+                t.description,
+                t.amount,
+                t.transaction_date,
+                t.is_recurring,
+                t.recurring_expense_id,
+                t.status,
+                t.budget_amount,
+                t.notes,
+                t.created_at,
+                a.name as account_name,
+                re.expense_type,
+                'transaction' as source_type,
+                NULL as from_account_id,
+                NULL as from_account_name,
+                NULL as to_account_name
+            FROM transactions t
+            LEFT JOIN accounts a ON t.account_id = a.id
+            LEFT JOIN recurring_expenses re ON t.recurring_expense_id = re.id
+            WHERE t.user_id = ?
+        `;
+        const transactionParams = [userId];
 
         if (from_date) {
-            query += ' AND transaction_date >= ?';
-            params.push(from_date);
+            transactionQuery += ' AND t.transaction_date >= ?';
+            transactionParams.push(from_date);
         }
         if (to_date) {
-            query += ' AND transaction_date <= ?';
-            params.push(to_date);
+            transactionQuery += ' AND t.transaction_date <= ?';
+            transactionParams.push(to_date);
         }
         if (account_id) {
-            query += ' AND account_id = ?';
-            params.push(account_id);
+            transactionQuery += ' AND t.account_id = ?';
+            transactionParams.push(account_id);
         }
-        if (transaction_type) {
-            query += ' AND transaction_type = ?';
-            params.push(transaction_type);
+        if (transaction_type && transaction_type !== 'transfer') {
+            transactionQuery += ' AND t.transaction_type = ?';
+            transactionParams.push(transaction_type);
         }
         if (status) {
-            query += ' AND status = ?';
-            params.push(status);
+            transactionQuery += ' AND t.status = ?';
+            transactionParams.push(status);
         }
         if (recurring_expense_id) {
-            query += ' AND recurring_expense_id = ?';
-            params.push(recurring_expense_id);
+            transactionQuery += ' AND t.recurring_expense_id = ?';
+            transactionParams.push(recurring_expense_id);
         }
 
-        query += ' ORDER BY transaction_date DESC, created_at DESC LIMIT ? OFFSET ?';
-        params.push(parseInt(limit), parseInt(offset));
+        // If filtering for transfers only, exclude transactions
+        if (isTransferFilter) {
+            transactionQuery += ' AND 1=0'; // Return no transactions when filtering for transfers
+        }
 
-        const transactions = db.prepare(query).all(...params);
+        // Build transfers query if needed
+        let transfersQuery = '';
+        const transferParams = [];
+
+        if (shouldIncludeTransfers || isTransferFilter) {
+            transfersQuery = `
+                SELECT
+                    tr.id,
+                    tr.user_id,
+                    tr.to_account_id as account_id,
+                    'transfer' as transaction_type,
+                    'Transfer' as category,
+                    CASE
+                        WHEN fa.name IS NOT NULL THEN fa.name || ' → ' || ta.name
+                        ELSE 'Income → ' || ta.name
+                    END as description,
+                    tr.amount,
+                    COALESCE(tr.executed_date, tr.scheduled_date) as transaction_date,
+                    0 as is_recurring,
+                    NULL as recurring_expense_id,
+                    tr.status,
+                    NULL as budget_amount,
+                    tr.notes,
+                    tr.created_at,
+                    ta.name as account_name,
+                    NULL as expense_type,
+                    'transfer' as source_type,
+                    tr.from_account_id,
+                    fa.name as from_account_name,
+                    ta.name as to_account_name
+                FROM transfers tr
+                LEFT JOIN accounts fa ON tr.from_account_id = fa.id
+                LEFT JOIN accounts ta ON tr.to_account_id = ta.id
+                WHERE tr.user_id = ? AND tr.status = 'completed'
+            `;
+            transferParams.push(userId);
+
+            if (from_date) {
+                transfersQuery += ' AND COALESCE(tr.executed_date, tr.scheduled_date) >= ?';
+                transferParams.push(from_date);
+            }
+            if (to_date) {
+                transfersQuery += ' AND COALESCE(tr.executed_date, tr.scheduled_date) <= ?';
+                transferParams.push(to_date);
+            }
+            if (account_id) {
+                transfersQuery += ' AND (tr.from_account_id = ? OR tr.to_account_id = ?)';
+                transferParams.push(account_id, account_id);
+            }
+        }
+
+        // Combine queries with UNION if including transfers
+        let combinedQuery;
+        let allParams;
+
+        if (shouldIncludeTransfers || isTransferFilter) {
+            // Use UNION to combine transactions and transfers
+            combinedQuery = `
+                SELECT * FROM (
+                    ${transactionQuery}
+                    UNION ALL
+                    ${transfersQuery}
+                ) combined
+                ORDER BY transaction_date DESC, created_at DESC
+                LIMIT ? OFFSET ?
+            `;
+            allParams = [...transactionParams, ...transferParams, parseInt(limit), parseInt(offset)];
+        } else {
+            combinedQuery = transactionQuery + ' ORDER BY t.transaction_date DESC, t.created_at DESC LIMIT ? OFFSET ?';
+            allParams = [...transactionParams, parseInt(limit), parseInt(offset)];
+        }
+
+        const transactions = db.prepare(combinedQuery).all(...allParams);
 
         // Get total count for pagination
-        let countQuery = 'SELECT COUNT(*) as total FROM transactions WHERE user_id = ?';
-        const countParams = [userId];
-        if (from_date) { countQuery += ' AND transaction_date >= ?'; countParams.push(from_date); }
-        if (to_date) { countQuery += ' AND transaction_date <= ?'; countParams.push(to_date); }
-        if (account_id) { countQuery += ' AND account_id = ?'; countParams.push(account_id); }
-        if (transaction_type) { countQuery += ' AND transaction_type = ?'; countParams.push(transaction_type); }
-        if (status) { countQuery += ' AND status = ?'; countParams.push(status); }
-        if (recurring_expense_id) { countQuery += ' AND recurring_expense_id = ?'; countParams.push(recurring_expense_id); }
+        let countQuery;
+        let countParams;
+
+        if (shouldIncludeTransfers || isTransferFilter) {
+            let transactionCountQuery = `SELECT COUNT(*) as cnt FROM transactions t WHERE t.user_id = ?`;
+            const transactionCountParams = [userId];
+
+            if (from_date) { transactionCountQuery += ' AND t.transaction_date >= ?'; transactionCountParams.push(from_date); }
+            if (to_date) { transactionCountQuery += ' AND t.transaction_date <= ?'; transactionCountParams.push(to_date); }
+            if (account_id) { transactionCountQuery += ' AND t.account_id = ?'; transactionCountParams.push(account_id); }
+            if (transaction_type && transaction_type !== 'transfer') { transactionCountQuery += ' AND t.transaction_type = ?'; transactionCountParams.push(transaction_type); }
+            if (status) { transactionCountQuery += ' AND t.status = ?'; transactionCountParams.push(status); }
+            if (isTransferFilter) { transactionCountQuery += ' AND 1=0'; }
+
+            let transferCountQuery = `SELECT COUNT(*) as cnt FROM transfers tr WHERE tr.user_id = ? AND tr.status = 'completed'`;
+            const transferCountParams = [userId];
+
+            if (from_date) { transferCountQuery += ' AND COALESCE(tr.executed_date, tr.scheduled_date) >= ?'; transferCountParams.push(from_date); }
+            if (to_date) { transferCountQuery += ' AND COALESCE(tr.executed_date, tr.scheduled_date) <= ?'; transferCountParams.push(to_date); }
+            if (account_id) { transferCountQuery += ' AND (tr.from_account_id = ? OR tr.to_account_id = ?)'; transferCountParams.push(account_id, account_id); }
+
+            const transactionCount = db.prepare(transactionCountQuery).get(...transactionCountParams);
+            const transferCount = db.prepare(transferCountQuery).get(...transferCountParams);
+
+            res.json({
+                transactions,
+                total: transactionCount.cnt + transferCount.cnt,
+                limit: parseInt(limit),
+                offset: parseInt(offset)
+            });
+            return;
+        } else {
+            countQuery = 'SELECT COUNT(*) as total FROM transactions WHERE user_id = ?';
+            countParams = [userId];
+            if (from_date) { countQuery += ' AND transaction_date >= ?'; countParams.push(from_date); }
+            if (to_date) { countQuery += ' AND transaction_date <= ?'; countParams.push(to_date); }
+            if (account_id) { countQuery += ' AND account_id = ?'; countParams.push(account_id); }
+            if (transaction_type) { countQuery += ' AND transaction_type = ?'; countParams.push(transaction_type); }
+            if (status) { countQuery += ' AND status = ?'; countParams.push(status); }
+            if (recurring_expense_id) { countQuery += ' AND recurring_expense_id = ?'; countParams.push(recurring_expense_id); }
+        }
 
         const countResult = db.prepare(countQuery).get(...countParams);
 
@@ -1425,9 +1587,9 @@ app.post('/api/transactions', authenticateToken, (req, res) => {
         }
 
         // Validate transaction type
-        const validTypes = ['income', 'expense', 'transfer'];
+        const validTypes = ['income', 'expense', 'transfer', 'withdrawal'];
         if (!validTypes.includes(transaction_type)) {
-            return res.status(400).json({ error: 'Invalid transaction_type. Must be: income, expense, or transfer' });
+            return res.status(400).json({ error: 'Invalid transaction_type. Must be: income, expense, transfer, or withdrawal' });
         }
 
         // Resolve account_id: if it's a frontend ID (string like "account-1"),
@@ -2016,6 +2178,117 @@ app.get('/api/transfer-schedules', authenticateToken, (req, res) => {
     } catch (error) {
         console.error('Get transfer schedules error:', error);
         res.status(500).json({ error: 'Server error fetching transfer schedules' });
+    }
+});
+
+// ============================================
+// SAVINGS PROJECTION ENDPOINT
+// ============================================
+
+// Helper function for savings projection calculation
+function calculateSavingsProjection(account, weeksToProject = 52) {
+    const balance = parseFloat(account.current_balance) || 0;
+    const weeklyContribution = parseFloat(account.savings_weekly_contribution) || 0;
+    const goalTarget = parseFloat(account.target_balance) || null;
+    const interestRate = parseFloat(account.savings_interest_rate) || 0;
+    const goalDeadline = account.target_date;
+
+    const monthlyRate = interestRate / 12;
+    let projectedBalance = balance;
+    const projectionData = [];
+    let weeksToGoal = null;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    for (let week = 0; week <= weeksToProject; week++) {
+        projectedBalance += weeklyContribution;
+
+        // Apply monthly interest (every ~4 weeks)
+        if (week > 0 && week % 4 === 0 && monthlyRate > 0) {
+            projectedBalance *= (1 + monthlyRate);
+        }
+
+        const weekDate = new Date(today);
+        weekDate.setDate(today.getDate() + (week * 7));
+
+        projectionData.push({
+            week,
+            balance: Math.round(projectedBalance * 100) / 100,
+            date: formatDateLocal(weekDate)
+        });
+
+        if (goalTarget && !weeksToGoal && projectedBalance >= goalTarget) {
+            weeksToGoal = week;
+        }
+    }
+
+    // Calculate required weekly rate to meet deadline
+    let requiredRate = null;
+    let projectedGoalDate = null;
+
+    if (goalTarget && goalDeadline) {
+        const deadline = new Date(goalDeadline);
+        deadline.setHours(0, 0, 0, 0);
+        const weeksRemaining = Math.max(1, Math.ceil((deadline - today) / (7 * 24 * 60 * 60 * 1000)));
+        const amountNeeded = goalTarget - balance;
+        if (amountNeeded > 0) {
+            requiredRate = Math.round((amountNeeded / weeksRemaining) * 100) / 100;
+        }
+    }
+
+    if (weeksToGoal !== null) {
+        const goalDate = new Date(today);
+        goalDate.setDate(today.getDate() + (weeksToGoal * 7));
+        projectedGoalDate = formatDateLocal(goalDate);
+    }
+
+    const progressPercent = goalTarget ? Math.round((balance / goalTarget) * 10000) / 100 : null;
+
+    return {
+        projection: projectionData,
+        weeksToGoal,
+        projectedGoalDate,
+        projectedFinalBalance: Math.round(projectedBalance * 100) / 100,
+        requiredRate,
+        currentRate: weeklyContribution,
+        progressPercent,
+        isOnTrack: requiredRate === null || weeklyContribution >= requiredRate
+    };
+}
+
+// Get savings projection for an account
+app.get('/api/accounts/:id/projection', authenticateToken, (req, res) => {
+    try {
+        const userId = req.user.userId;
+        const accountId = parseInt(req.params.id);
+        const { weeks = 52 } = req.query;
+
+        // Get account with savings fields
+        const account = db.prepare(`
+            SELECT * FROM accounts
+            WHERE id = ? AND user_id = ? AND account_type = 'savings'
+        `).get(accountId, userId);
+
+        if (!account) {
+            return res.status(404).json({ error: 'Savings account not found' });
+        }
+
+        // Calculate projection
+        const projection = calculateSavingsProjection(account, parseInt(weeks));
+
+        res.json({
+            accountId: account.id,
+            accountName: account.name,
+            currentBalance: account.current_balance,
+            goalTarget: account.target_balance,
+            goalDeadline: account.target_date,
+            interestRate: account.savings_interest_rate,
+            weeklyContribution: account.savings_weekly_contribution,
+            ...projection
+        });
+    } catch (error) {
+        console.error('Get savings projection error:', error);
+        res.status(500).json({ error: 'Server error calculating projection' });
     }
 });
 

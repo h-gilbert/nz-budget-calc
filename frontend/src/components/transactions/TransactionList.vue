@@ -28,6 +28,21 @@
         <option value="income">Income</option>
         <option value="expense">Expense</option>
         <option value="transfer">Transfer</option>
+        <option value="withdrawal">Withdrawal</option>
+      </select>
+
+      <!-- Account Filter -->
+      <select
+        v-model="filters.account_id"
+        class="px-3 py-2 text-sm border border-gray-200 rounded-xl focus:ring-2 focus:ring-teal-500 focus:border-transparent"
+      >
+        <option value="">All Accounts</option>
+        <optgroup v-if="expenseAccounts.length" label="Expense Accounts">
+          <option v-for="acc in expenseAccounts" :key="acc.id" :value="acc.id">{{ acc.name }}</option>
+        </optgroup>
+        <optgroup v-if="savingsAccounts.length" label="Savings Accounts">
+          <option v-for="acc in savingsAccounts" :key="acc.id" :value="acc.id">{{ acc.name }}</option>
+        </optgroup>
       </select>
 
       <!-- Apply Filters -->
@@ -106,7 +121,14 @@
 
 <script setup>
 import { ref, computed } from 'vue'
+import { useBudgetStore } from '@/stores/budget'
 import TransactionItem from './TransactionItem.vue'
+
+const budgetStore = useBudgetStore()
+
+// Get accounts for filtering
+const expenseAccounts = computed(() => budgetStore.getExpenseAccounts())
+const savingsAccounts = computed(() => budgetStore.getSavingsAccounts())
 
 const props = defineProps({
   transactions: {
@@ -133,7 +155,8 @@ const emit = defineEmits(['edit', 'delete', 'load-more', 'filter'])
 const filters = ref({
   from_date: '',
   to_date: '',
-  transaction_type: ''
+  transaction_type: '',
+  account_id: ''
 })
 
 // Group transactions by date
@@ -156,8 +179,10 @@ const groupedTransactions = computed(() => {
     }
     groups[date].transactions.push(transaction)
 
-    // Calculate running total for the day
-    if (transaction.transaction_type === 'income') {
+    // Calculate running total for the day (exclude transfers - they just move money between accounts)
+    if (transaction.transaction_type === 'transfer' || transaction.source_type === 'transfer') {
+      // Don't include transfers in daily total
+    } else if (transaction.transaction_type === 'income') {
       groups[date].totalAmount += parseFloat(transaction.amount)
     } else {
       groups[date].totalAmount -= parseFloat(transaction.amount)
@@ -209,7 +234,8 @@ function clearFilters() {
   filters.value = {
     from_date: '',
     to_date: '',
-    transaction_type: ''
+    transaction_type: '',
+    account_id: ''
   }
   emit('filter', {})
 }

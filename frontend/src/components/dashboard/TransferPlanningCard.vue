@@ -22,6 +22,11 @@
             class="bg-teal-400 transition-all"
             :style="{ width: barWidth(recommendations.totalAcceleration) }"
           ></div>
+          <!-- Savings -->
+          <div
+            class="bg-blue-400 transition-all"
+            :style="{ width: barWidth(recommendations.totalSavingsContributions || 0) }"
+          ></div>
         </div>
       </div>
       <div class="flex justify-between mt-2 text-xs">
@@ -33,6 +38,10 @@
           <span class="flex items-center gap-1">
             <span class="w-3 h-3 rounded bg-teal-400"></span>
             <span class="text-slate-600">Acceleration</span>
+          </span>
+          <span v-if="recommendations.totalSavingsContributions > 0" class="flex items-center gap-1">
+            <span class="w-3 h-3 rounded bg-blue-400"></span>
+            <span class="text-slate-600">Savings</span>
           </span>
         </div>
         <span
@@ -49,57 +58,86 @@
       <div
         v-for="rec in recommendations.recommendations.filter(r => r.recommendedTransfer > 0)"
         :key="rec.accountId"
-        class="p-4 bg-slate-50 rounded-xl"
+        :class="[
+          'p-4 rounded-xl',
+          rec.accountType === 'savings' ? 'bg-blue-50' : 'bg-slate-50'
+        ]"
       >
         <div class="flex justify-between items-center mb-2">
-          <span class="font-medium text-slate-800">{{ rec.accountName || 'Unnamed' }}</span>
-          <span class="font-mono font-semibold text-teal-600">
+          <div class="flex items-center gap-2">
+            <span
+              :class="[
+                'text-xs px-2 py-0.5 rounded-full',
+                rec.accountType === 'savings' ? 'bg-blue-200 text-blue-700' : 'bg-slate-200 text-slate-600'
+              ]"
+            >
+              {{ rec.accountType === 'savings' ? 'Savings' : 'Expense' }}
+            </span>
+            <span class="font-medium text-slate-800">{{ rec.accountName || 'Unnamed' }}</span>
+          </div>
+          <span :class="['font-mono font-semibold', rec.accountType === 'savings' ? 'text-blue-600' : 'text-teal-600']">
             ${{ formatMoney(rec.recommendedTransfer) }}/wk
           </span>
         </div>
 
-        <!-- Mini stacked bar -->
-        <div class="h-2 bg-slate-200 rounded-full overflow-hidden">
-          <div class="h-full flex">
-            <div
-              class="bg-slate-400"
-              :style="{ width: accountBarWidth(rec, rec.weeklyEquilibrium) }"
-            ></div>
-            <div
-              class="bg-teal-400"
-              :style="{ width: accountBarWidth(rec, rec.acceleration) }"
-            ></div>
+        <!-- Mini stacked bar for expense accounts -->
+        <template v-if="rec.accountType !== 'savings'">
+          <div class="h-2 bg-slate-200 rounded-full overflow-hidden">
+            <div class="h-full flex">
+              <div
+                class="bg-slate-400"
+                :style="{ width: accountBarWidth(rec, rec.weeklyEquilibrium) }"
+              ></div>
+              <div
+                class="bg-teal-400"
+                :style="{ width: accountBarWidth(rec, rec.acceleration) }"
+              ></div>
+            </div>
           </div>
-        </div>
 
-        <!-- Breakdown text -->
-        <div class="flex gap-4 mt-2 text-xs text-slate-500">
-          <span v-if="rec.weeklyEquilibrium > 0">
-            Expenses: ${{ formatMoney(rec.weeklyEquilibrium) }}
-          </span>
-          <span v-if="rec.acceleration > 0" class="text-teal-600">
-            Accel: ${{ formatMoney(rec.acceleration) }}
-          </span>
-        </div>
-
-        <!-- Equilibrium date indicator (when acceleration is configured) -->
-        <div v-if="getEquilibriumInfo(rec.accountId)" class="mt-3 pt-3 border-t border-slate-200">
-          <div v-if="getEquilibriumInfo(rec.accountId).weeksUntilEquilibrium" class="flex items-center gap-2">
-            <svg class="w-4 h-4 text-teal-500" fill="currentColor" viewBox="0 0 20 20">
-              <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clip-rule="evenodd" />
-            </svg>
-            <span class="text-sm text-slate-600">
-              Equilibrium in <strong class="text-teal-600">{{ getEquilibriumInfo(rec.accountId).weeksUntilEquilibrium }} weeks</strong>
-              <span class="text-slate-400">({{ formatDate(getEquilibriumInfo(rec.accountId).equilibriumDate) }})</span>
+          <!-- Breakdown text -->
+          <div class="flex gap-4 mt-2 text-xs text-slate-500">
+            <span v-if="rec.weeklyEquilibrium > 0">
+              Expenses: ${{ formatMoney(rec.weeklyEquilibrium) }}
+            </span>
+            <span v-if="rec.acceleration > 0" class="text-teal-600">
+              Accel: ${{ formatMoney(rec.acceleration) }}
             </span>
           </div>
-          <div v-else-if="getEquilibriumInfo(rec.accountId).acceleration > 0" class="flex items-center gap-2 text-amber-600">
-            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-              <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd" />
-            </svg>
-            <span class="text-sm">Equilibrium not reachable within 2 years at current acceleration</span>
+
+          <!-- Equilibrium date indicator (when acceleration is configured) -->
+          <div v-if="getEquilibriumInfo(rec.accountId)" class="mt-3 pt-3 border-t border-slate-200">
+            <div v-if="getEquilibriumInfo(rec.accountId).weeksUntilEquilibrium" class="flex items-center gap-2">
+              <svg class="w-4 h-4 text-teal-500" fill="currentColor" viewBox="0 0 20 20">
+                <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clip-rule="evenodd" />
+              </svg>
+              <span class="text-sm text-slate-600">
+                Equilibrium in <strong class="text-teal-600">{{ getEquilibriumInfo(rec.accountId).weeksUntilEquilibrium }} weeks</strong>
+                <span class="text-slate-400">({{ formatDate(getEquilibriumInfo(rec.accountId).equilibriumDate) }})</span>
+              </span>
+            </div>
+            <div v-else-if="getEquilibriumInfo(rec.accountId).acceleration > 0" class="flex items-center gap-2 text-amber-600">
+              <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd" />
+              </svg>
+              <span class="text-sm">Equilibrium not reachable within 2 years at current acceleration</span>
+            </div>
           </div>
-        </div>
+        </template>
+
+        <!-- Savings-specific display -->
+        <template v-else>
+          <!-- Progress bar if goal set -->
+          <div v-if="rec.savingsGoalTarget" class="h-2 bg-blue-100 rounded-full overflow-hidden">
+            <div
+              class="h-full bg-blue-500 transition-all"
+              :style="{ width: `${Math.min(100, rec.savingsProgressPercent || 0)}%` }"
+            ></div>
+          </div>
+          <div v-if="rec.savingsGoalTarget" class="mt-2 text-xs text-blue-600">
+            {{ Math.round(rec.savingsProgressPercent || 0) }}% of ${{ formatMoney(rec.savingsGoalTarget) }}
+          </div>
+        </template>
       </div>
     </div>
 
