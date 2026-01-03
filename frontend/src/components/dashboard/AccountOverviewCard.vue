@@ -12,23 +12,24 @@
     </div>
 
     <!-- Account cards grid -->
-    <div v-else class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-      <!-- Expense Accounts -->
-      <div
-        v-for="rec in expenseRecommendations"
-        :key="rec.accountId"
-        class="p-3 bg-slate-50 rounded-xl border border-slate-100 hover:border-slate-200 transition-colors"
-      >
-        <!-- Account name and balance -->
-        <div class="flex justify-between items-start mb-2">
-          <div class="flex items-center gap-2">
-            <span class="text-xs px-2 py-0.5 bg-slate-200 text-slate-600 rounded-full">Expense</span>
-            <span class="font-medium text-slate-800 text-sm truncate">{{ rec.accountName || 'Unnamed' }}</span>
+    <div v-else class="space-y-4">
+      <!-- Expense Accounts Grid -->
+      <div v-if="expenseRecommendations.length > 0" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        <div
+          v-for="rec in expenseRecommendations"
+          :key="rec.accountId"
+          class="p-3 bg-slate-50 rounded-xl border border-slate-100 hover:border-slate-200 transition-colors"
+        >
+          <!-- Account name and balance -->
+          <div class="flex justify-between items-start gap-2 mb-2">
+            <div class="flex items-center gap-2 min-w-0 flex-1">
+              <span class="text-xs px-2 py-0.5 bg-slate-200 text-slate-600 rounded-full flex-shrink-0">Expense</span>
+              <span class="font-medium text-slate-800 text-sm truncate">{{ rec.accountName || 'Unnamed' }}</span>
+            </div>
+            <span class="font-mono text-teal-600 font-semibold text-sm whitespace-nowrap flex-shrink-0">
+              ${{ formatMoney(rec.currentBalance) }}
+            </span>
           </div>
-          <span class="font-mono text-teal-600 font-semibold text-sm whitespace-nowrap">
-            ${{ formatMoney(rec.currentBalance) }}
-          </span>
-        </div>
 
         <!-- Compact stats row -->
         <div class="flex justify-between text-xs text-slate-500 mb-2">
@@ -61,59 +62,64 @@
             ${{ formatMoney(getLumpSum(rec.accountId)) }}
           </span>
         </div>
+        </div>
       </div>
 
-      <!-- Savings Accounts (compact) -->
-      <div
-        v-for="savings in savingsProjections"
-        :key="savings.accountId"
-        class="p-3 bg-blue-50 rounded-xl border border-blue-100"
-      >
-        <!-- Account name and balance -->
-        <div class="flex justify-between items-start mb-2">
-          <div class="flex items-center gap-2">
-            <span class="text-xs px-2 py-0.5 bg-blue-200 text-blue-700 rounded-full">Savings</span>
-            <span class="font-medium text-slate-800 text-sm truncate">{{ savings.accountName || 'Unnamed' }}</span>
+      <!-- Savings Accounts Grid -->
+      <div v-if="savingsProjections.length > 0" class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div
+          v-for="savings in savingsProjections"
+          :key="savings.accountId"
+          class="p-4 bg-blue-50 rounded-xl border border-blue-100"
+        >
+          <!-- Account name and balance -->
+          <div class="flex justify-between items-start gap-3 mb-3">
+            <div class="flex items-center gap-2 min-w-0 flex-1">
+              <span class="text-xs px-2 py-0.5 bg-blue-200 text-blue-700 rounded-full flex-shrink-0">Savings</span>
+              <span class="font-medium text-slate-800 text-sm truncate">{{ savings.accountName || 'Unnamed' }}</span>
+            </div>
+            <span class="font-mono text-blue-600 font-semibold text-base whitespace-nowrap flex-shrink-0">
+              ${{ formatMoney(savings.currentBalance) }}
+            </span>
           </div>
-          <span class="font-mono text-blue-600 font-semibold text-sm whitespace-nowrap">
-            ${{ formatMoney(savings.currentBalance) }}
-          </span>
-        </div>
 
-        <!-- Progress bar (if goal set) -->
-        <div v-if="savings.goalTarget" class="mb-2">
-          <div class="h-2 bg-blue-100 rounded-full overflow-hidden">
-            <div
-              class="h-full bg-blue-500 transition-all"
-              :style="{ width: `${Math.min(100, savings.progressPercent || 0)}%` }"
-            ></div>
+          <!-- Progress bar (if goal set) -->
+          <div v-if="savings.goalTarget" class="mb-3">
+            <div class="h-2.5 bg-blue-100 rounded-full overflow-hidden">
+              <div
+                class="h-full bg-blue-500 transition-all"
+                :style="{ width: `${Math.min(100, savings.progressPercent || 0)}%` }"
+              ></div>
+            </div>
+            <div class="flex justify-between text-xs mt-1.5">
+              <span class="text-blue-600 font-medium">{{ Math.round(savings.progressPercent || 0) }}%</span>
+              <span class="text-slate-500">${{ formatMoney(savings.goalTarget) }} goal</span>
+            </div>
           </div>
-          <div class="flex justify-between text-xs mt-1">
-            <span class="text-blue-600 font-medium">{{ Math.round(savings.progressPercent || 0) }}%</span>
-            <span class="text-slate-500">${{ formatMoney(savings.goalTarget) }}</span>
+
+          <!-- Stats row -->
+          <div class="flex justify-between items-center text-sm">
+            <div class="text-slate-500">
+              <span class="text-xs">Weekly:</span>
+              <span class="font-mono text-blue-600 font-medium ml-1">${{ formatMoney(savings.currentRate) }}</span>
+            </div>
+
+            <!-- On track indicator -->
+            <div v-if="savings.goalTarget">
+              <span v-if="savings.isOnTrack" class="text-xs text-green-600 flex items-center gap-1 font-medium">
+                <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
+                  <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.857-9.809a.75.75 0 00-1.214-.882l-3.483 4.79-1.88-1.88a.75.75 0 10-1.06 1.061l2.5 2.5a.75.75 0 001.137-.089l4-5.5z" clip-rule="evenodd" />
+                </svg>
+                On track
+              </span>
+              <span v-else class="text-xs text-amber-600 flex items-center gap-1 font-medium">
+                <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
+                  <path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd" />
+                </svg>
+                Behind
+              </span>
+            </div>
           </div>
-        </div>
-
-        <!-- Weekly contribution -->
-        <div class="flex justify-between text-xs text-slate-500">
-          <span>Weekly:</span>
-          <span class="font-mono text-blue-600 font-medium">${{ formatMoney(savings.currentRate) }}</span>
-        </div>
-
-        <!-- On track indicator (compact) -->
-        <div v-if="savings.goalTarget" class="flex items-center gap-1 mt-1">
-          <span v-if="savings.isOnTrack" class="text-xs text-green-600 flex items-center gap-1">
-            <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
-              <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.857-9.809a.75.75 0 00-1.214-.882l-3.483 4.79-1.88-1.88a.75.75 0 10-1.06 1.061l2.5 2.5a.75.75 0 001.137-.089l4-5.5z" clip-rule="evenodd" />
-            </svg>
-            On track
-          </span>
-          <span v-else class="text-xs text-amber-600 flex items-center gap-1">
-            <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
-              <path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd" />
-            </svg>
-            Behind
-          </span>
         </div>
       </div>
     </div>

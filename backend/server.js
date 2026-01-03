@@ -531,13 +531,14 @@ function syncAccountsToTable(userId, budgetId, accountsJson) {
         const isSavings = accountType === 'savings';
 
         if (existingMap.has(account.id)) {
-            // Update existing account - DO NOT overwrite current_balance
-            // Balance is managed by transactions/transfers, not budget saves
+            // Update existing account including current_balance
+            // Balance syncs from frontend to ensure setup screen changes persist
             const dbId = existingMap.get(account.id);
             db.prepare(`
                 UPDATE accounts SET
                     name = ?,
                     account_type = ?,
+                    current_balance = ?,
                     target_balance = ?,
                     target_date = ?,
                     savings_interest_rate = ?,
@@ -547,6 +548,7 @@ function syncAccountsToTable(userId, budgetId, accountsJson) {
             `).run(
                 account.name || 'Unnamed Account',
                 accountType,
+                account.balance || 0,
                 isSavings ? (account.savingsGoalTarget || null) : null,
                 isSavings ? (account.savingsGoalDeadline || null) : null,
                 isSavings ? (account.savingsInterestRate || null) : null,
@@ -583,6 +585,13 @@ function syncAccountsToTable(userId, budgetId, accountsJson) {
     // Delete accounts no longer in JSON
     for (const [frontendId, dbId] of existingMap) {
         if (!currentFrontendIds.has(frontendId)) {
+            // Handle transfers table foreign key constraints (lacks ON DELETE CASCADE/SET NULL)
+            // from_account_id can be NULL, but to_account_id is NOT NULL
+            db.prepare('UPDATE transfers SET from_account_id = NULL WHERE from_account_id = ?').run(dbId);
+            db.prepare('DELETE FROM transfers WHERE to_account_id = ?').run(dbId);
+            // Also clean up transfer_schedules that reference this account
+            db.prepare('DELETE FROM transfer_schedules WHERE from_account_id = ? OR to_account_id = ?').run(dbId, dbId);
+            // Now safe to delete the account
             db.prepare('DELETE FROM accounts WHERE id = ?').run(dbId);
         }
     }
