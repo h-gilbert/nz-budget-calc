@@ -686,7 +686,13 @@ export const useBudgetStore = defineStore('budget', () => {
           expenseType: expense.expenseType || expense.expense_type || 'bill'
         }
       })
-      expenseCount.value = expenses.value.length
+      // Find the maximum numeric ID from existing expenses to prevent duplicate IDs
+      const maxExpenseId = expenses.value.reduce((max, expense) => {
+        const match = expense.id?.match(/expense-(\d+)/)
+        const num = match ? parseInt(match[1]) : 0
+        return Math.max(max, num)
+      }, 0)
+      expenseCount.value = maxExpenseId
     }
 
     // Transform accounts (id, name, balance, accelerationAmount, accelerationBufferWeeks, savings fields)
@@ -710,7 +716,13 @@ export const useBudgetStore = defineStore('budget', () => {
           savingsWeeklyContribution: isSavings ? (parseFloat(account.savingsWeeklyContribution || account.savings_weekly_contribution) || 0) : undefined
         }
       })
-      accountCount.value = accounts.value.length
+      // Find the maximum numeric ID from existing accounts to prevent duplicate IDs
+      const maxAccountId = accounts.value.reduce((max, account) => {
+        const match = account.id?.match(/account-(\d+)/)
+        const num = match ? parseInt(match[1]) : 0
+        return Math.max(max, num)
+      }, 0)
+      accountCount.value = maxAccountId
     }
 
     savingsTarget.value = parseFloat(data.savingsTarget) || 0
