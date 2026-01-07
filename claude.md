@@ -40,7 +40,7 @@ docker-compose -f docker-compose.production.yml up
 - `NODE_ENV`: development/production
 - `JWT_SECRET`: Required for authentication
 - `DATA_DIR`: SQLite database directory (default: /app/data in prod)
-- `FRONTEND_URL`: https://budget.hamishgilbert.com (production)
+- `FRONTEND_URL`: https://budget.example.com (production)
 
 ### Frontend (vite.config.js)
 - Dev server port: 8000
@@ -77,4 +77,4 @@ nz-budget-calculator/
 - Uses SQLite for simplicity - no external database needed
 - Frontend on port 8000 is unique across all projects
 - Backend on 3200 is unique
-- Production URL: https://budget.hamishgilbert.com
+- Production URL: https://budget.example.com

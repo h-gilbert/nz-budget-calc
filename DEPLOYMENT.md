@@ -14,15 +14,15 @@
 
 ## Overview
 
-This document provides complete instructions for deploying the NZ Budget Calculator to your Unraid server at **budget.hamishgilbert.com**.
+This document provides complete instructions for deploying the NZ Budget Calculator to your Unraid server at **budget.example.com**.
 
 ### Key Information
-- **Server**: Unraid 7.0.1 (192.168.1.2)
-- **Domain**: budget.hamishgilbert.com
+- **Server**: Unraid 7.0.1 (YOUR_SERVER_IP)
+- **Domain**: budget.example.com
 - **Backend Port**: 3200
 - **Frontend**: Vue.js (static build)
 - **Database**: SQLite
-- **SSL**: Let's Encrypt wildcard cert (*.hamishgilbert.com)
+- **SSL**: Let's Encrypt wildcard cert (*.example.com)
 - **Reverse Proxy**: multi-site-nginx container
 
 ---
@@ -40,7 +40,7 @@ This document provides complete instructions for deploying the NZ Budget Calcula
 │   │   ├── mealplanner.conf
 │   │   └── budget.conf         # TO BE CREATED
 │   ├── ssl/                    # SSL certificates
-│   │   └── live/hamishgilbert.com/
+│   │   └── live/example.com/
 │   └── docker-compose.yml
 ├── letsencrypt/                # Let's Encrypt data
 └── todo-app/                   # Example app structure
@@ -64,13 +64,13 @@ This document provides complete instructions for deploying the NZ Budget Calcula
 ### Request Flow
 
 ```
-User Request (budget.hamishgilbert.com:443)
+User Request (budget.example.com:443)
     ↓
 Unraid nginx (port 443) → multi-site-nginx (port 9443)
     ↓
 /mnt/user/appdata/multi-site-nginx/conf.d/budget.conf
     ↓
-├─ /api/* → http://192.168.1.2:3200 (Backend Docker Container)
+├─ /api/* → http://YOUR_SERVER_IP:3200 (Backend Docker Container)
 └─ /*     → /usr/share/nginx/budget (Frontend Static Files)
 ```
 
@@ -139,7 +139,7 @@ services:
       NODE_ENV: production
       PORT: 3200
       JWT_SECRET: ${JWT_SECRET}
-      FRONTEND_URL: https://budget.hamishgilbert.com
+      FRONTEND_URL: https://budget.example.com
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3200/api/verify"]
       interval: 30s
@@ -167,7 +167,7 @@ volumes:
 server {
     listen 80;
     listen [::]:80;
-    server_name budget.hamishgilbert.com;
+    server_name budget.example.com;
 
     # Let's Encrypt webroot for certificate verification
     location ^~ /.well-known/acme-challenge/ {
@@ -188,11 +188,11 @@ server {
     listen 443 ssl;
     listen [::]:443 ssl;
     http2 on;
-    server_name budget.hamishgilbert.com;
+    server_name budget.example.com;
 
     # SSL certificates (shared wildcard cert)
-    ssl_certificate /etc/nginx/ssl/live/hamishgilbert.com/fullchain.pem;
-    ssl_certificate_key /etc/nginx/ssl/live/hamishgilbert.com/privkey.pem;
+    ssl_certificate /etc/nginx/ssl/live/example.com/fullchain.pem;
+    ssl_certificate_key /etc/nginx/ssl/live/example.com/privkey.pem;
 
     # SSL configuration
     ssl_protocols TLSv1.2 TLSv1.3;
@@ -204,7 +204,7 @@ server {
 
     # Proxy API requests to backend
     location /api/ {
-        proxy_pass http://192.168.1.2:3200;
+        proxy_pass http://YOUR_SERVER_IP:3200;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection 'upgrade';
@@ -248,7 +248,7 @@ server {
 JWT_SECRET=your-super-secret-jwt-key-here-change-this
 NODE_ENV=production
 PORT=3200
-FRONTEND_URL=https://budget.hamishgilbert.com
+FRONTEND_URL=https://budget.example.com
 ```
 
 ### 5. .dockerignore
@@ -294,7 +294,7 @@ echo "🚀 Deploying NZ Budget Calculator..."
 
 # Configuration
 SERVER_USER="root"
-SERVER_HOST="192.168.1.2"
+SERVER_HOST="YOUR_SERVER_IP"
 APP_DIR="/mnt/user/appdata/nz-budget-calculator"
 MULTI_NGINX_DIR="/mnt/user/appdata/multi-site-nginx"
 
@@ -332,7 +332,7 @@ ENDSSH
 
 print_success "✅ Budget app deployed successfully!"
 echo ""
-echo "Access your app at: https://budget.hamishgilbert.com"
+echo "Access your app at: https://budget.example.com"
 ```
 
 ---
@@ -344,7 +344,7 @@ echo "Access your app at: https://budget.hamishgilbert.com"
 #### 1. Create App Directory on Server
 
 ```bash
-ssh root@192.168.1.2
+ssh root@YOUR_SERVER_IP
 mkdir -p /mnt/user/appdata/nz-budget-calculator
 cd /mnt/user/appdata/nz-budget-calculator
 ```
@@ -383,7 +383,7 @@ cat > .env << 'EOF'
 JWT_SECRET=$(openssl rand -base64 32)
 NODE_ENV=production
 PORT=3200
-FRONTEND_URL=https://budget.hamishgilbert.com
+FRONTEND_URL=https://budget.example.com
 EOF
 ```
 
@@ -402,13 +402,13 @@ npm run build
 ```bash
 # From project root
 rsync -avz --exclude 'node_modules' --exclude '.git' \
-    ./ root@192.168.1.2:/mnt/user/appdata/nz-budget-calculator/
+    ./ root@YOUR_SERVER_IP:/mnt/user/appdata/nz-budget-calculator/
 ```
 
 #### 3. Build and Start Backend
 
 ```bash
-ssh root@192.168.1.2
+ssh root@YOUR_SERVER_IP
 
 cd /mnt/user/appdata/nz-budget-calculator
 
@@ -424,7 +424,7 @@ docker logs -f budget-backend
 
 ```bash
 # Check backend health
-curl http://192.168.1.2:3200/api/verify
+curl http://YOUR_SERVER_IP:3200/api/verify
 
 # Check nginx config
 docker exec multi-site-nginx nginx -t
@@ -435,7 +435,7 @@ docker exec multi-site-nginx nginx -s reload
 
 #### 5. Test Access
 
-Visit: https://budget.hamishgilbert.com
+Visit: https://budget.example.com
 
 ---
 
@@ -446,7 +446,7 @@ Visit: https://budget.hamishgilbert.com
 Go to your GitHub repository → Settings → Secrets and variables → Actions
 
 Add these secrets:
-- `SERVER_HOST`: `192.168.1.2`
+- `SERVER_HOST`: `YOUR_SERVER_IP`
 - `SERVER_USER`: `root`
 - `SERVER_SSH_KEY`: (Your SSH private key)
 - `JWT_SECRET`: (Generate with `openssl rand -base64 32`)
@@ -510,7 +510,7 @@ jobs:
           echo "JWT_SECRET=${JWT_SECRET}" > .env
           echo "NODE_ENV=production" >> .env
           echo "PORT=3200" >> .env
-          echo "FRONTEND_URL=https://budget.hamishgilbert.com" >> .env
+          echo "FRONTEND_URL=https://budget.example.com" >> .env
         fi
 
         # Build and restart backend
@@ -542,7 +542,7 @@ brew install act  # macOS
 curl https://raw.githubusercontent.com/nektos/act/master/install.sh | sudo bash  # Linux
 
 # Run workflow
-act -s SERVER_HOST=192.168.1.2 \
+act -s SERVER_HOST=YOUR_SERVER_IP \
     -s SERVER_USER=root \
     -s SSH_KEY="$(cat ~/.ssh/id_rsa)"
 ```
@@ -553,15 +553,15 @@ act -s SERVER_HOST=192.168.1.2 \
 
 ### Existing SSL Certificate
 
-Your server already has a Let's Encrypt wildcard certificate for `*.hamishgilbert.com`:
-- Location: `/mnt/user/appdata/letsencrypt/live/hamishgilbert.com/`
-- Email: hamishgilbert97@gmail.com
+Your server already has a Let's Encrypt wildcard certificate for `*.example.com`:
+- Location: `/mnt/user/appdata/letsencrypt/live/example.com/`
+- Email: your-email@example.com
 
 The `multi-site-nginx` container mounts this certificate and uses it for all subdomains.
 
 ### No Additional SSL Setup Needed
 
-Since you already have the wildcard certificate, **budget.hamishgilbert.com** will automatically use it. No additional configuration required!
+Since you already have the wildcard certificate, **budget.example.com** will automatically use it. No additional configuration required!
 
 ### SSL Certificate Renewal
 
@@ -569,7 +569,7 @@ The certificate auto-renews via Let's Encrypt. Check renewal status:
 
 ```bash
 # On server
-cat /mnt/user/appdata/multi-site-nginx/ssl/renewal/hamishgilbert.com.conf
+cat /mnt/user/appdata/multi-site-nginx/ssl/renewal/example.com.conf
 ```
 
 ---
@@ -634,10 +634,10 @@ docker-compose restart
 
 ```bash
 # Check certificate
-openssl s_client -connect budget.hamishgilbert.com:443 -servername budget.hamishgilbert.com
+openssl s_client -connect budget.example.com:443 -servername budget.example.com
 
 # View certificate expiry
-docker exec multi-site-nginx openssl x509 -in /etc/nginx/ssl/live/hamishgilbert.com/fullchain.pem -noout -dates
+docker exec multi-site-nginx openssl x509 -in /etc/nginx/ssl/live/example.com/fullchain.pem -noout -dates
 ```
 
 ### Port Conflicts
@@ -655,7 +655,7 @@ kill -9 <PID>
 
 ```bash
 # Manual health check
-curl http://192.168.1.2:3200/api/verify
+curl http://YOUR_SERVER_IP:3200/api/verify
 
 # Check backend logs
 docker logs budget-backend | grep -i error
@@ -674,10 +674,10 @@ The `restart: unless-stopped` policy in docker-compose ensures the container sta
 
 ```bash
 # Reboot test (WARNING: Will restart server)
-ssh root@192.168.1.2 reboot
+ssh root@YOUR_SERVER_IP reboot
 
 # After reboot, check if running
-ssh root@192.168.1.2 "docker ps | grep budget"
+ssh root@YOUR_SERVER_IP "docker ps | grep budget"
 ```
 
 ---
@@ -727,7 +727,7 @@ docker-compose -f docker-compose.production.yml up -d --build
 ./deploy.sh
 
 # SSH to server
-ssh root@192.168.1.2
+ssh root@YOUR_SERVER_IP
 
 # View backend logs
 docker logs -f budget-backend
@@ -739,7 +739,7 @@ docker restart budget-backend
 docker exec multi-site-nginx nginx -s reload
 
 # Check health
-curl http://192.168.1.2:3200/api/verify
+curl http://YOUR_SERVER_IP:3200/api/verify
 
 # Access database
 docker exec -it budget-backend sqlite3 /app/data/budget.db
@@ -749,9 +749,9 @@ docker exec -it budget-backend sqlite3 /app/data/budget.db
 
 ## Support & Contact
 
-- **GitHub**: https://github.com/h-gilbert/nz-budget-calc
-- **Domain**: budget.hamishgilbert.com
-- **Server IP**: 192.168.1.2
+- **GitHub**: https://github.com/your-username/nz-budget-calculator
+- **Domain**: budget.example.com
+- **Server IP**: YOUR_SERVER_IP
 - **Backend Port**: 3200
 
 ---

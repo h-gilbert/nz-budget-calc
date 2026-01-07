@@ -15,7 +15,7 @@ services:
       NODE_ENV: production
       PORT: 3200
       JWT_SECRET: ${JWT_SECRET}
-      FRONTEND_URL: https://budget.hamishgilbert.com
+      FRONTEND_URL: https://budget.example.com
       TZ: Pacific/Auckland
       AUTO_SCHEDULER_ENABLED: "true"
       AUTO_SCHEDULER_CRON: "0 5 * * *"

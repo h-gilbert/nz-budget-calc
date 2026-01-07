@@ -102,8 +102,8 @@ jobs:
 
             # Pull latest images
             echo "📦 Pulling images..."
-            docker pull ghcr.io/h-gilbert/budget-backend:latest
-            docker pull ghcr.io/h-gilbert/budget-frontend:latest
+            docker pull ghcr.io/your-username/budget-backend:latest
+            docker pull ghcr.io/your-username/budget-frontend:latest
 
             # Restart containers
             echo "🔄 Restarting containers..."
@@ -141,4 +141,4 @@ jobs:
             docker exec nginx nginx -s reload
             echo "✅ Nginx reloaded"
 
-            echo "🌐 App available at: https://budget.hamishgilbert.com"
+            echo "🌐 App available at: https://budget.example.com"

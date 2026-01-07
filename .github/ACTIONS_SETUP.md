@@ -4,8 +4,8 @@ This guide will help you set up automated deployment using GitHub Actions.
 
 ## Prerequisites
 
-- GitHub repository: `https://github.com/h-gilbert/nz-budget-calc`
-- SSH access to your server (192.168.1.2)
+- GitHub repository: `https://github.com/your-username/nz-budget-calculator`
+- SSH access to your server (YOUR_SERVER_IP)
 - Server app directory: `/mnt/user/appdata/nz-budget-calculator`
 
 ## Step 1: Generate SSH Key for GitHub Actions
@@ -17,7 +17,7 @@ On your **local computer**, run:
 ssh-keygen -t ed25519 -C "github-actions@budget-app" -f ~/.ssh/github_actions_budget
 
 # Copy the public key to your server
-ssh-copy-id -i ~/.ssh/github_actions_budget.pub root@192.168.1.2
+ssh-copy-id -i ~/.ssh/github_actions_budget.pub root@YOUR_SERVER_IP
 
 # Display the private key (you'll need this for GitHub)
 cat ~/.ssh/github_actions_budget
@@ -27,7 +27,7 @@ cat ~/.ssh/github_actions_budget
 
 ## Step 2: Configure GitHub Secrets
 
-1. Go to your GitHub repository: https://github.com/h-gilbert/nz-budget-calc
+1. Go to your GitHub repository: https://github.com/your-username/nz-budget-calculator
 2. Click **Settings** → **Secrets and variables** → **Actions**
 3. Click **New repository secret** and add the following secrets:
 
@@ -35,7 +35,7 @@ cat ~/.ssh/github_actions_budget
 
 | Secret Name | Value | Description |
 |------------|-------|-------------|
-| `SERVER_HOST` | `192.168.1.2` | Your server IP address |
+| `SERVER_HOST` | `YOUR_SERVER_IP` | Your server IP address |
 | `SERVER_USER` | `root` | SSH user for the server |
 | `SERVER_SSH_KEY` | *Your private key from Step 1* | The entire content of `~/.ssh/github_actions_budget` |
 | `JWT_SECRET` | *Generate new secret* | Run `openssl rand -base64 32` to generate |
@@ -102,13 +102,13 @@ If you see "Permission denied" or "Host key verification failed":
 
 1. Verify `SERVER_SSH_KEY` secret contains the **private key** (not public key)
 2. Ensure the public key is added to server's `~/.ssh/authorized_keys`
-3. Test SSH manually: `ssh -i ~/.ssh/github_actions_budget root@192.168.1.2`
+3. Test SSH manually: `ssh -i ~/.ssh/github_actions_budget root@YOUR_SERVER_IP`
 
 ### Backend Health Check Failed
 
 Check backend logs on server:
 ```bash
-ssh root@192.168.1.2
+ssh root@YOUR_SERVER_IP
 docker logs --tail 50 budget-backend
 ```
 
@@ -117,7 +117,7 @@ docker logs --tail 50 budget-backend
 1. Clear browser cache
 2. Check nginx is serving the latest files:
    ```bash
-   ssh root@192.168.1.2
+   ssh root@YOUR_SERVER_IP
    ls -la /mnt/user/appdata/nz-budget-calculator/frontend/dist
    docker exec multi-site-nginx nginx -s reload
    ```
@@ -150,9 +150,9 @@ To disable auto-deployment:
 
 ## Links
 
-- **Repository**: https://github.com/h-gilbert/nz-budget-calc
-- **Production URL**: https://budget.hamishgilbert.com
-- **Backend API**: http://192.168.1.2:3200
+- **Repository**: https://github.com/your-username/nz-budget-calculator
+- **Production URL**: https://budget.example.com
+- **Backend API**: http://YOUR_SERVER_IP:3200
 - **GitHub Actions Docs**: https://docs.github.com/en/actions
 
 ## Support
@@ -161,4 +161,4 @@ If you encounter issues:
 1. Check GitHub Actions logs
 2. Check server logs: `docker logs budget-backend`
 3. Verify nginx config: `docker exec multi-site-nginx nginx -t`
-4. Test backend health: `curl http://192.168.1.2:3200/api/verify`
+4. Test backend health: `curl http://YOUR_SERVER_IP:3200/api/verify`

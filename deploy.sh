@@ -18,7 +18,7 @@ echo "🚀 Deploying NZ Budget Calculator..."
 
 # Configuration
 SERVER_USER="root"
-SERVER_HOST="192.168.1.2"
+SERVER_HOST="YOUR_SERVER_IP"
 APP_DIR="/mnt/user/appdata/nz-budget-calculator"
 MULTI_NGINX_DIR="/mnt/user/appdata/multi-site-nginx"
 
@@ -49,7 +49,7 @@ echo "Waiting for backend to be healthy..."
 sleep 10
 
 # Check backend health
-if curl -f http://192.168.1.2:3200/api/verify > /dev/null 2>&1; then
+if curl -f http://YOUR_SERVER_IP:3200/api/verify > /dev/null 2>&1; then
     echo "✅ Backend is healthy"
 else
     echo "⚠️  Backend health check failed - checking logs..."
@@ -65,4 +65,4 @@ ENDSSH
 
 print_success "✅ Budget app deployed successfully!"
 echo ""
-echo "Access your app at: https://budget.hamishgilbert.com"
+echo "Access your app at: https://budget.example.com"
