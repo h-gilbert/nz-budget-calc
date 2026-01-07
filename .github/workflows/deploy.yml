@@ -94,7 +94,10 @@ jobs:
           host: ${{ secrets.SERVER_TAILSCALE_IP }}
           username: fred
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
+          envs: GITHUB_REPOSITORY_OWNER
+        env:
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+        script: |
             set -e
             echo "🚀 Starting deployment..."
 
@@ -102,8 +105,8 @@ jobs:
 
             # Pull latest images
             echo "📦 Pulling images..."
-            docker pull ghcr.io/h-gilbert/budget-backend:latest
-            docker pull ghcr.io/h-gilbert/budget-frontend:latest
+            docker pull ghcr.io/${GITHUB_REPOSITORY_OWNER}/budget-backend:latest
+            docker pull ghcr.io/${GITHUB_REPOSITORY_OWNER}/budget-frontend:latest
 
             # Restart containers
             echo "🔄 Restarting containers..."
@@ -141,4 +144,4 @@ jobs:
             docker exec nginx nginx -s reload
             echo "✅ Nginx reloaded"
 
-            echo "🌐 App available at: https://budget.example.com"
+            echo "🌐 Deployment complete!"
