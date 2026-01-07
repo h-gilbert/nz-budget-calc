@@ -32,6 +32,9 @@ Thumbs.db
 
 # Claude
 .claude/
+claude.md
+CLAUDE.md
+commands.txt
 
 # SSH Keys (NEVER commit these!)
 *.pem
