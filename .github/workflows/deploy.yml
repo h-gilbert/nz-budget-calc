@@ -102,8 +102,8 @@ jobs:
 
             # Pull latest images
             echo "📦 Pulling images..."
-            docker pull ghcr.io/your-username/budget-backend:latest
-            docker pull ghcr.io/your-username/budget-frontend:latest
+            docker pull ghcr.io/h-gilbert/budget-backend:latest
+            docker pull ghcr.io/h-gilbert/budget-frontend:latest
 
             # Restart containers
             echo "🔄 Restarting containers..."
