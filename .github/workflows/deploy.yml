@@ -90,14 +90,14 @@ jobs:
 
       - name: Deploy to server
         uses: appleboy/ssh-action@v1.0.3
+        env:
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
         with:
           host: ${{ secrets.SERVER_TAILSCALE_IP }}
           username: fred
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           envs: GITHUB_REPOSITORY_OWNER
-        env:
-          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
-        script: |
+          script: |
             set -e
             echo "🚀 Starting deployment..."
 
