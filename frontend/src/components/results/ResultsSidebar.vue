@@ -133,7 +133,7 @@ const weeklyIncome = computed(() => {
     const annual = amount * 52
     let tax = 0
 
-    // 2024-2025 NZ tax brackets (from 31 July 2024)
+    // 2025-2026 NZ tax brackets (from 1 April 2025)
     if (annual <= 15600) {
       tax = annual * 0.105
     } else if (annual <= 53500) {

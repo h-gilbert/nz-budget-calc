@@ -4,7 +4,16 @@
       <!-- Header -->
       <div class="text-center mb-8">
         <h1 class="text-3xl font-bold text-slate-800">Set Up Your Budget</h1>
-        <p class="mt-2 text-slate-600">Enter your details to see your weekly spending power</p>
+        <div class="mt-2 flex items-center justify-center gap-2">
+          <p class="text-slate-600">Enter your details to see your weekly spending power</p>
+          <span class="text-slate-300">·</span>
+          <button
+            @click="toggleMode"
+            class="text-sm text-teal-600 hover:text-teal-700 font-medium transition-colors inline-flex items-center gap-1 hover:underline"
+          >
+            {{ budgetStore.budgetMode === 'simple' ? 'Advanced mode' : 'Simple mode' }}
+          </button>
+        </div>
       </div>
 
       <!-- Main Layout -->
@@ -45,9 +54,25 @@ defineEmits(['openLogin'])
 const budgetStore = useBudgetStore()
 const activeTab = ref('income')
 
-const tabs = computed(() => [
-  { id: 'income', label: 'Income' },
-  { id: 'expenses', label: 'Expenses', badge: budgetStore.expenses.length || undefined },
-  { id: 'accounts', label: 'Accounts', badge: budgetStore.accounts.length || undefined },
-])
+const tabs = computed(() => {
+  const baseTabs = [
+    { id: 'income', label: 'Income' },
+    { id: 'expenses', label: 'Expenses', badge: budgetStore.expenses.length || undefined },
+  ]
+
+  // Only show Accounts tab in advanced mode
+  if (budgetStore.budgetMode === 'advanced') {
+    baseTabs.push({ id: 'accounts', label: 'Accounts', badge: budgetStore.accounts.length || undefined })
+  }
+
+  return baseTabs
+})
+
+function toggleMode() {
+  budgetStore.budgetMode = budgetStore.budgetMode === 'simple' ? 'advanced' : 'simple'
+  // If switching to simple mode and on accounts tab, switch to income
+  if (budgetStore.budgetMode === 'simple' && activeTab.value === 'accounts') {
+    activeTab.value = 'income'
+  }
+}
 </script>

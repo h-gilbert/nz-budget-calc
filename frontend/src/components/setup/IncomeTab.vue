@@ -342,12 +342,12 @@ const weeklyGross = computed(() => {
   return amount
 })
 
-// Calculate PAYE using 2024-2025 NZ tax brackets (from 31 July 2024)
+// Calculate PAYE using 2025-2026 NZ tax brackets (from 1 April 2025)
 const estimatedPaye = computed(() => {
   const annual = weeklyGross.value * 52
   let tax = 0
 
-  // 2024-2025 NZ tax brackets
+  // 2025-2026 NZ tax brackets
   if (annual <= 15600) {
     tax = annual * 0.105
   } else if (annual <= 53500) {

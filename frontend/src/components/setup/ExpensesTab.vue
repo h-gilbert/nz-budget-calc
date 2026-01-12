@@ -34,7 +34,7 @@
     <!-- Expense Table -->
     <div v-else class="bg-white rounded-2xl border border-slate-200 overflow-hidden">
       <!-- Table Header - Hidden on mobile -->
-      <div class="hidden md:grid grid-cols-[1fr_100px_100px_110px_90px] gap-2 px-4 py-3 bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-500 uppercase tracking-wide">
+      <div :class="['hidden md:grid gap-2 px-4 py-3 bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-500 uppercase tracking-wide', gridCols]">
         <button
           @click="toggleSort('name')"
           class="flex items-center gap-1 text-left hover:text-teal-600 transition-colors"
@@ -57,6 +57,7 @@
           <SortIcon v-if="sortField === 'frequency'" :direction="sortDirection" />
         </button>
         <button
+          v-if="isAdvancedMode"
           @click="toggleSort('account')"
           class="flex items-center gap-1 hover:text-teal-600 transition-colors"
         >
@@ -97,7 +98,7 @@
           class="border-b border-slate-100 last:border-b-0 hover:bg-slate-50 cursor-pointer transition-colors group"
         >
           <!-- Desktop: Grid layout -->
-          <div class="hidden md:grid grid-cols-[1fr_100px_100px_110px_90px] gap-2 px-4 py-3">
+          <div :class="['hidden md:grid gap-2 px-4 py-3', gridCols]">
             <span class="text-slate-800 font-medium truncate flex items-center gap-1.5">
               {{ expense.name || 'Unnamed expense' }}
               <span v-if="expense.expenseType === 'budget'" class="px-1.5 py-0.5 text-xs font-medium bg-purple-100 text-purple-600 rounded">
@@ -106,7 +107,7 @@
             </span>
             <span class="text-right font-mono text-slate-600 text-sm">${{ formatMoney(expense.amount) }}</span>
             <span class="text-slate-500 text-sm capitalize">{{ expense.frequency }}</span>
-            <span class="text-slate-500 text-sm truncate">{{ getAccountName(expense.accountId) }}</span>
+            <span v-if="isAdvancedMode" class="text-slate-500 text-sm truncate">{{ getAccountName(expense.accountId) }}</span>
             <span class="text-right font-mono text-teal-600 font-semibold text-sm">${{ formatMoney(getWeeklyCost(expense)) }}</span>
           </div>
 
@@ -125,8 +126,10 @@
               <span class="font-mono">${{ formatMoney(expense.amount) }}</span>
               <span class="text-slate-300">•</span>
               <span class="capitalize">{{ expense.frequency }}</span>
-              <span v-if="expense.accountId" class="text-slate-300">•</span>
-              <span v-if="expense.accountId" class="truncate">{{ getAccountName(expense.accountId) }}</span>
+              <template v-if="isAdvancedMode && expense.accountId">
+                <span class="text-slate-300">•</span>
+                <span class="truncate">{{ getAccountName(expense.accountId) }}</span>
+              </template>
             </div>
           </div>
         </div>
@@ -163,6 +166,15 @@ import AppButton from '@/components/common/AppButton.vue'
 import ExpenseEditModal from './ExpenseEditModal.vue'
 
 const budgetStore = useBudgetStore()
+
+// Computed for checking mode
+const isAdvancedMode = computed(() => budgetStore.budgetMode === 'advanced')
+
+// Grid columns based on mode
+const gridCols = computed(() => isAdvancedMode.value
+  ? 'grid-cols-[1fr_100px_100px_110px_90px]'
+  : 'grid-cols-[1fr_100px_100px_90px]'
+)
 
 // Sorting state
 const sortField = ref('weeklyCost')

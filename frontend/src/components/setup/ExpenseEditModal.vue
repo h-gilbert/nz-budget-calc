@@ -26,8 +26,9 @@
         />
       </div>
 
-      <!-- Account Selector -->
+      <!-- Account Selector - Only in advanced mode -->
       <AppSelect
+        v-if="isAdvancedMode"
         v-model="localExpense.accountId"
         label="Paid from Account"
         :options="accountOptions"
@@ -249,6 +250,9 @@ const emit = defineEmits(['update:modelValue', 'delete'])
 const budgetStore = useBudgetStore()
 const showDeleteConfirm = ref(false)
 const localExpense = ref({})
+
+// Check if in advanced mode
+const isAdvancedMode = computed(() => budgetStore.budgetMode === 'advanced')
 
 const isOpen = computed({
   get: () => props.modelValue,

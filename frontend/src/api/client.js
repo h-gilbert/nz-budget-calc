@@ -31,10 +31,11 @@ apiClient.interceptors.response.use(
   (error) => {
     const errorMessage = error.response?.data?.error || error.message || 'An error occurred'
 
-    // Handle 401 Unauthorized - clear token and redirect to login
+    // Handle 401 Unauthorized - clear token and dispatch logout event
     if (error.response?.status === 401) {
       localStorage.removeItem('authToken')
-      // Could dispatch a logout action here
+      // Dispatch custom event to trigger store logout (avoids circular dependency)
+      window.dispatchEvent(new CustomEvent('auth:unauthorized'))
     }
 
     return Promise.reject(new Error(errorMessage))
@@ -60,6 +61,12 @@ export const authAPI = {
 
   async changePassword(currentPassword, newPassword) {
     return apiClient.post('/change-password', { currentPassword, newPassword })
+  },
+
+  async logout() {
+    // Server-side logout (optional - clears any server session if implemented)
+    // For JWT-based auth, the main work is done client-side
+    return Promise.resolve()
   }
 }
 

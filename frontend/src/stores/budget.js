@@ -110,6 +110,12 @@ export const useBudgetStore = defineStore('budget', () => {
   const budgetSummary = ref({ summaries: [], total_budget: 0, total_actual: 0, total_variance: 0 })
   const transactionsLoading = ref(false)
 
+  // Demo mode flag - prevents auto-saving when viewing demo data
+  const isDemoMode = ref(false)
+
+  // Budget mode - 'simple' (default) or 'advanced' (shows accounts)
+  const budgetMode = ref('simple')
+
   // Helper function to calculate weeks until a date
   function weeksUntilDate(dateStr) {
     if (!dateStr) return 1 // Default to 1 week if no date
@@ -463,7 +469,7 @@ export const useBudgetStore = defineStore('budget', () => {
     }
   }
 
-  // Calculate NZ PAYE tax for a given annual income (2024-2025 brackets)
+  // Calculate NZ PAYE tax for a given annual income (2025-2026 brackets)
   function calculatePAYE(annualIncome) {
     if (annualIncome <= 0) return 0
 
@@ -665,6 +671,9 @@ export const useBudgetStore = defineStore('budget', () => {
     studentLoan.value = data.studentLoan === true || data.studentLoan === 1
     ietcEligible.value = data.ietcEligible === true || data.ietcEligible === 1
 
+    // Budget mode (simple or advanced)
+    budgetMode.value = data.budgetMode || 'simple'
+
     // Transform expenses from backend format to frontend format
     const backendExpenses = data.expenses || []
     if (Array.isArray(backendExpenses)) {
@@ -764,7 +773,7 @@ export const useBudgetStore = defineStore('budget', () => {
     // Calculate annual income for tax brackets (excluding non-taxable allowance)
     const annualIncome = weeklyGross * 52
 
-    // NZ PAYE Tax Calculation (2024-2025 progressive brackets - from 31 July 2024)
+    // NZ PAYE Tax Calculation (2025-2026 progressive brackets - from 1 April 2025)
     let annualTax = 0
 
     if (annualIncome <= 15600) {
@@ -782,7 +791,7 @@ export const useBudgetStore = defineStore('budget', () => {
     // ACC Earner's Levy (2025-2026: 1.67%)
     const annualACC = annualIncome * 0.0167
 
-    // IETC (Independent Earner Tax Credit) - 2024 rules
+    // IETC (Independent Earner Tax Credit) - 2025/2026 rules
     // $520/year for income between $24,000 and $66,000
     // Reduces by 13 cents per dollar between $66,001 and $70,000
     let annualIETC = 0
@@ -1127,6 +1136,7 @@ export const useBudgetStore = defineStore('budget', () => {
       kiwisaverRate: kiwisaverRate.value,
       studentLoan: studentLoan.value,
       ietcEligible: ietcEligible.value,
+      budgetMode: budgetMode.value,
       expenses: transformedExpenses,
       accounts: transformedAccounts,
       savingsTarget: savingsTarget.value,
@@ -1181,6 +1191,257 @@ export const useBudgetStore = defineStore('budget', () => {
     }
   }
 
+  // Load demo data for showcasing the app
+  async function loadDemoData() {
+    // Reset first to clear any existing data
+    reset()
+
+    // Set demo mode flag to prevent auto-saving
+    isDemoMode.value = true
+
+    // Demo income: $75,000/year gross salary
+    incomeMode.value = 'gross'
+    payType.value = 'annually'
+    payAmount.value = 75000
+
+    // Tax settings
+    kiwisaver.value = true
+    kiwisaverRate.value = '4'
+    studentLoan.value = true
+    ietcEligible.value = false
+
+    // Demo expenses - good mix of weekly, monthly, and annual
+    expenses.value = [
+      // Weekly expenses
+      { id: 'expense-1', name: 'Rent', amount: 450, frequency: 'weekly', accountId: 'account-1', paymentMode: 'automatic', expenseType: 'bill' },
+      { id: 'expense-2', name: 'Groceries', amount: 180, frequency: 'weekly', accountId: 'account-1', paymentMode: 'automatic', expenseType: 'bill' },
+      { id: 'expense-3', name: 'Petrol', amount: 60, frequency: 'weekly', accountId: 'account-1', paymentMode: 'automatic', expenseType: 'bill' },
+      // Monthly expenses
+      { id: 'expense-4', name: 'Power', amount: 160, frequency: 'monthly', accountId: 'account-1', paymentMode: 'automatic', expenseType: 'bill' },
+      { id: 'expense-5', name: 'Internet', amount: 99, frequency: 'monthly', accountId: 'account-1', paymentMode: 'automatic', expenseType: 'bill' },
+      { id: 'expense-6', name: 'Phone', amount: 65, frequency: 'monthly', accountId: 'account-1', paymentMode: 'automatic', expenseType: 'bill' },
+      { id: 'expense-7', name: 'Streaming Services', amount: 45, frequency: 'monthly', accountId: 'account-1', paymentMode: 'automatic', expenseType: 'bill' },
+      { id: 'expense-8', name: 'Gym Membership', amount: 25, frequency: 'monthly', accountId: 'account-1', paymentMode: 'automatic', expenseType: 'bill' },
+      // Annual expenses
+      { id: 'expense-9', name: 'Car Insurance', amount: 780, frequency: 'annually', accountId: 'account-1', paymentMode: 'automatic', expenseType: 'bill' },
+      { id: 'expense-10', name: 'Car Registration', amount: 120, frequency: 'annually', accountId: 'account-1', paymentMode: 'automatic', expenseType: 'bill' },
+      { id: 'expense-11', name: 'Contents Insurance', amount: 420, frequency: 'annually', accountId: 'account-1', paymentMode: 'automatic', expenseType: 'bill' }
+    ]
+    expenseCount.value = 11
+
+    // Demo accounts
+    accounts.value = [
+      { id: 'account-1', name: 'Bills Account', type: 'expense', balance: 1250, accelerationAmount: 0, accelerationBufferWeeks: 0 },
+      { id: 'account-2', name: 'Emergency Fund', type: 'savings', balance: 2500, savingsGoalTarget: 5000, savingsGoalDeadline: '', savingsInterestRate: 4.5, savingsWeeklyContribution: 50 }
+    ]
+    accountCount.value = 2
+
+    // Generate demo transactions (past 4 weeks of history)
+    const today = new Date()
+    const demoTransactions = []
+    let transactionId = 1
+
+    // Helper to create dates in the past
+    const daysAgo = (days) => {
+      const date = new Date(today)
+      date.setDate(date.getDate() - days)
+      return formatDateLocal(date)
+    }
+
+    // Weekly transfers for the past 4 weeks
+    for (let week = 0; week < 4; week++) {
+      const weekDays = week * 7
+      demoTransactions.push({
+        id: transactionId++,
+        transaction_type: 'transfer',
+        source_type: 'transfer',
+        amount: 782.50,
+        transaction_date: daysAgo(weekDays + (week === 0 ? 0 : 1)),
+        description: 'Weekly transfer',
+        from_account_name: 'Main Account',
+        to_account_name: 'Bills Account',
+        account_name: 'Bills Account'
+      })
+    }
+
+    // Rent payments (weekly)
+    for (let week = 0; week < 4; week++) {
+      demoTransactions.push({
+        id: transactionId++,
+        transaction_type: 'expense',
+        amount: 450,
+        transaction_date: daysAgo(week * 7 + 1),
+        description: 'Rent',
+        category: 'Rent',
+        account_name: 'Bills Account',
+        is_recurring: true,
+        expense_type: 'bill'
+      })
+    }
+
+    // Grocery shopping (varies week to week)
+    const groceryAmounts = [165.40, 192.30, 178.50, 185.20]
+    for (let week = 0; week < 4; week++) {
+      demoTransactions.push({
+        id: transactionId++,
+        transaction_type: 'expense',
+        amount: groceryAmounts[week],
+        transaction_date: daysAgo(week * 7 + 3),
+        description: 'Groceries',
+        category: 'Groceries',
+        account_name: 'Bills Account',
+        is_recurring: true,
+        expense_type: 'bill'
+      })
+    }
+
+    // Petrol (weekly)
+    const petrolAmounts = [55.00, 62.50, 58.00, 65.00]
+    for (let week = 0; week < 4; week++) {
+      demoTransactions.push({
+        id: transactionId++,
+        transaction_type: 'expense',
+        amount: petrolAmounts[week],
+        transaction_date: daysAgo(week * 7 + 4),
+        description: 'Petrol',
+        category: 'Petrol',
+        account_name: 'Bills Account',
+        is_recurring: true,
+        expense_type: 'bill'
+      })
+    }
+
+    // Monthly bills (happened 2 weeks ago)
+    demoTransactions.push({
+      id: transactionId++,
+      transaction_type: 'expense',
+      amount: 158.45,
+      transaction_date: daysAgo(14),
+      description: 'Power bill',
+      category: 'Power',
+      account_name: 'Bills Account',
+      is_recurring: true,
+      expense_type: 'bill'
+    })
+
+    demoTransactions.push({
+      id: transactionId++,
+      transaction_type: 'expense',
+      amount: 99.00,
+      transaction_date: daysAgo(14),
+      description: 'Internet',
+      category: 'Internet',
+      account_name: 'Bills Account',
+      is_recurring: true,
+      expense_type: 'bill'
+    })
+
+    // Savings transfers
+    for (let week = 0; week < 4; week++) {
+      demoTransactions.push({
+        id: transactionId++,
+        transaction_type: 'transfer',
+        source_type: 'transfer',
+        amount: 50,
+        transaction_date: daysAgo(week * 7),
+        description: 'Savings transfer',
+        from_account_name: 'Main Account',
+        to_account_name: 'Emergency Fund',
+        account_name: 'Emergency Fund'
+      })
+    }
+
+    // Sort by date descending
+    demoTransactions.sort((a, b) => new Date(b.transaction_date) - new Date(a.transaction_date))
+    transactions.value = demoTransactions
+    transactionsTotal.value = demoTransactions.length
+
+    // Generate upcoming items (next 30 days)
+    const demoUpcoming = []
+    let upcomingId = 1
+
+    // Helper to create future dates
+    const daysFromNow = (days) => {
+      const date = new Date(today)
+      date.setDate(date.getDate() + days)
+      return formatDateLocal(date)
+    }
+
+    // Weekly transfers
+    for (let week = 1; week <= 4; week++) {
+      demoUpcoming.push({
+        id: upcomingId++,
+        item_type: 'transfer',
+        name: 'Weekly Transfer',
+        amount: 782.50,
+        due_date: daysFromNow(week * 7),
+        to_account_name: 'Bills Account'
+      })
+    }
+
+    // Weekly rent
+    for (let week = 1; week <= 4; week++) {
+      demoUpcoming.push({
+        id: upcomingId++,
+        item_type: 'expense',
+        name: 'Rent',
+        amount: 450,
+        due_date: daysFromNow(week * 7 + 1)
+      })
+    }
+
+    // Monthly bills coming up
+    demoUpcoming.push({
+      id: upcomingId++,
+      item_type: 'expense',
+      name: 'Power',
+      amount: 160,
+      due_date: daysFromNow(15)
+    })
+
+    demoUpcoming.push({
+      id: upcomingId++,
+      item_type: 'expense',
+      name: 'Internet',
+      amount: 99,
+      due_date: daysFromNow(15)
+    })
+
+    demoUpcoming.push({
+      id: upcomingId++,
+      item_type: 'expense',
+      name: 'Phone',
+      amount: 65,
+      due_date: daysFromNow(20)
+    })
+
+    // Savings transfers
+    for (let week = 1; week <= 4; week++) {
+      demoUpcoming.push({
+        id: upcomingId++,
+        item_type: 'transfer',
+        name: 'Savings Transfer',
+        amount: 50,
+        due_date: daysFromNow(week * 7),
+        to_account_name: 'Emergency Fund'
+      })
+    }
+
+    // Sort by date
+    demoUpcoming.sort((a, b) => new Date(a.due_date) - new Date(b.due_date))
+    upcomingItems.value = demoUpcoming
+
+    // Run calculation to populate results
+    await calculate()
+  }
+
+  // Exit demo mode - clear data and return to fresh state
+  function exitDemoMode() {
+    isDemoMode.value = false
+    reset()
+    clearLocalStorage()
+  }
+
   // Watch for changes and auto-save to localStorage (debounced)
   let saveTimeout = null
   let backendSaveTimeout = null
@@ -1194,7 +1455,8 @@ export const useBudgetStore = defineStore('budget', () => {
     }, 500) // Debounce by 500ms
 
     // Also sync to backend if we have a budget ID (authenticated user with saved budget)
-    if (budgetId.value) {
+    // Skip backend sync in demo mode
+    if (budgetId.value && !isDemoMode.value) {
       if (backendSaveTimeout) clearTimeout(backendSaveTimeout)
       backendSaveTimeout = setTimeout(async () => {
         try {
@@ -2665,6 +2927,7 @@ export const useBudgetStore = defineStore('budget', () => {
     results,
     hasCalculated,
     recentPayments,
+    budgetMode,
 
     // Computed
     totalExpenses,
@@ -2740,6 +3003,11 @@ export const useBudgetStore = defineStore('budget', () => {
     saveToLocalStorage,
     loadFromLocalStorage,
     clearLocalStorage,
+
+    // Demo mode
+    isDemoMode,
+    loadDemoData,
+    exitDemoMode,
 
     // Transaction state
     transactions,

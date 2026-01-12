@@ -84,7 +84,7 @@
               Savings
             </router-link>
           </nav>
-          <template v-if="userStore.isAuthenticated">
+          <template v-if="showUserMenu">
             <!-- User Menu -->
             <div class="relative" ref="menuRef">
               <button
@@ -94,10 +94,10 @@
                 <div
                   class="w-8 h-8 bg-gradient-to-br from-teal-400 to-teal-600 rounded-full flex items-center justify-center text-white font-semibold text-sm"
                 >
-                  {{ userStore.username?.charAt(0).toUpperCase() }}
+                  {{ displayUsername?.charAt(0).toUpperCase() }}
                 </div>
                 <span class="hidden sm:block text-sm font-medium text-gray-700">
-                  {{ userStore.username }}
+                  {{ displayUsername }}
                 </span>
                 <svg
                   class="w-4 h-4 text-gray-400"
@@ -120,6 +120,7 @@
                   class="absolute right-0 mt-2 w-48 bg-white rounded-2xl shadow-[0_8px_30px_rgba(0,0,0,0.08)] border border-gray-100 py-2 overflow-hidden"
                 >
                   <button
+                    v-if="!isDemoMode"
                     @click="handleChangePassword"
                     class="w-full px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
                   >
@@ -137,7 +138,7 @@
                     </svg>
                     Change Password
                   </button>
-                  <hr class="my-2 border-gray-100" />
+                  <hr v-if="!isDemoMode" class="my-2 border-gray-100" />
                   <button
                     @click="handleLogout"
                     class="w-full px-4 py-2.5 text-left text-sm text-red-600 hover:bg-red-50 flex items-center gap-2"
@@ -159,7 +160,7 @@
                         clip-rule="evenodd"
                       />
                     </svg>
-                    Logout
+                    {{ isDemoMode ? 'Exit Demo' : 'Logout' }}
                   </button>
                 </div>
               </Transition>
@@ -283,17 +284,18 @@
 
               <!-- Bottom Section -->
               <div class="border-t border-gray-100 p-4">
-                <template v-if="userStore.isAuthenticated">
+                <template v-if="showUserMenu">
                   <div class="flex items-center gap-3 mb-4 px-2">
                     <div class="w-10 h-10 bg-gradient-to-br from-teal-400 to-teal-600 rounded-full flex items-center justify-center text-white font-semibold">
-                      {{ userStore.username?.charAt(0).toUpperCase() }}
+                      {{ displayUsername?.charAt(0).toUpperCase() }}
                     </div>
                     <div>
-                      <p class="font-medium text-gray-800">{{ userStore.username }}</p>
-                      <p class="text-xs text-gray-500">Logged in</p>
+                      <p class="font-medium text-gray-800">{{ displayUsername }}</p>
+                      <p class="text-xs text-gray-500">{{ isDemoMode ? 'Demo mode' : 'Logged in' }}</p>
                     </div>
                   </div>
                   <button
+                    v-if="!isDemoMode"
                     @click="handleMobileChangePassword"
                     class="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-base font-medium text-gray-600 hover:bg-gray-100 transition-colors"
                   >
@@ -310,7 +312,7 @@
                       <path fill-rule="evenodd" d="M3 4.25A2.25 2.25 0 015.25 2h5.5A2.25 2.25 0 0113 4.25v2a.75.75 0 01-1.5 0v-2a.75.75 0 00-.75-.75h-5.5a.75.75 0 00-.75.75v11.5c0 .414.336.75.75.75h5.5a.75.75 0 00.75-.75v-2a.75.75 0 011.5 0v2A2.25 2.25 0 0110.75 18h-5.5A2.25 2.25 0 013 15.75V4.25z" clip-rule="evenodd" />
                       <path fill-rule="evenodd" d="M6 10a.75.75 0 01.75-.75h9.546l-1.048-.943a.75.75 0 111.004-1.114l2.5 2.25a.75.75 0 010 1.114l-2.5 2.25a.75.75 0 11-1.004-1.114l1.048-.943H6.75A.75.75 0 016 10z" clip-rule="evenodd" />
                     </svg>
-                    Logout
+                    {{ isDemoMode ? 'Exit Demo' : 'Logout' }}
                   </button>
                 </template>
                 <template v-else>
@@ -335,14 +337,24 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { storeToRefs } from 'pinia'
 import { useUserStore } from '@/stores/user'
+import { useBudgetStore } from '@/stores/budget'
 import AppButton from '@/components/common/AppButton.vue'
 
 const route = useRoute()
+const router = useRouter()
 const userStore = useUserStore()
+const budgetStore = useBudgetStore()
+const { isAuthenticated, username } = storeToRefs(userStore)
+const { isDemoMode } = storeToRefs(budgetStore)
 const emit = defineEmits(['openLogin', 'openPasswordChange'])
+
+// Show user menu for authenticated users OR demo mode
+const showUserMenu = computed(() => isAuthenticated.value || isDemoMode.value)
+const displayUsername = computed(() => isDemoMode.value ? 'Demo' : username.value)
 
 const showMenu = ref(false)
 const showMobileMenu = ref(false)
@@ -353,8 +365,21 @@ watch(() => route.path, () => {
   showMobileMenu.value = false
 })
 
+// Close all menus when auth state changes
+watch(isAuthenticated, () => {
+  showMenu.value = false
+  showMobileMenu.value = false
+})
+
 function handleLogout() {
-  userStore.logout()
+  if (isDemoMode.value) {
+    budgetStore.exitDemoMode()
+  } else {
+    userStore.logout()
+    budgetStore.reset()
+    budgetStore.clearLocalStorage()
+  }
+  router.push('/')
   showMenu.value = false
 }
 
@@ -371,7 +396,14 @@ function handleMobileLogin() {
 
 function handleMobileLogout() {
   showMobileMenu.value = false
-  userStore.logout()
+  if (isDemoMode.value) {
+    budgetStore.exitDemoMode()
+  } else {
+    userStore.logout()
+    budgetStore.reset()
+    budgetStore.clearLocalStorage()
+  }
+  router.push('/')
 }
 
 function handleMobileChangePassword() {

@@ -1,30 +1,37 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
+const APP_NAME = 'NZ Budget Calculator'
+
 const routes = [
   {
     path: '/',
     name: 'Landing',
-    component: () => import('@/views/LandingPage.vue')
+    component: () => import('@/views/LandingPage.vue'),
+    meta: { title: 'Home' }
   },
   {
     path: '/setup',
     name: 'Setup',
-    component: () => import('@/views/SetupPage.vue')
+    component: () => import('@/views/SetupPage.vue'),
+    meta: { title: 'Budget Setup' }
   },
   {
     path: '/dashboard',
     name: 'Dashboard',
-    component: () => import('@/views/Dashboard.vue')
+    component: () => import('@/views/Dashboard.vue'),
+    meta: { title: 'Dashboard' }
   },
   {
     path: '/transactions',
     name: 'Transactions',
-    component: () => import('@/views/TransactionsPage.vue')
+    component: () => import('@/views/TransactionsPage.vue'),
+    meta: { title: 'Transactions' }
   },
   {
     path: '/savings',
     name: 'Savings',
-    component: () => import('@/views/SavingsPage.vue')
+    component: () => import('@/views/SavingsPage.vue'),
+    meta: { title: 'Savings' }
   },
   // Backwards-compatible redirects
   {
@@ -43,6 +50,12 @@ const router = createRouter({
   scrollBehavior() {
     return { top: 0 }
   }
+})
+
+// Update document title on navigation
+router.afterEach((to) => {
+  const pageTitle = to.meta?.title
+  document.title = pageTitle ? `${pageTitle} | ${APP_NAME}` : APP_NAME
 })
 
 export default router
