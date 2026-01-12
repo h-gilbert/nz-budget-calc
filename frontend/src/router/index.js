@@ -57,7 +57,9 @@ const router = createRouter({
 router.beforeEach((to) => {
   if (to.name === 'Landing') {
     const userStore = useUserStore()
-    if (userStore.isAuthenticated) {
+    // Check store state or localStorage token for initial page load
+    const hasToken = userStore.isAuthenticated || localStorage.getItem('authToken')
+    if (hasToken) {
       return { name: 'Dashboard' }
     }
   }
