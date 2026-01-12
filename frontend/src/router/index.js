@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { useUserStore } from '@/stores/user'
 
 const APP_NAME = 'NZ Budget Calculator'
 
@@ -49,6 +50,16 @@ const router = createRouter({
   routes,
   scrollBehavior() {
     return { top: 0 }
+  }
+})
+
+// Redirect authenticated users from landing to dashboard
+router.beforeEach((to) => {
+  if (to.name === 'Landing') {
+    const userStore = useUserStore()
+    if (userStore.isAuthenticated) {
+      return { name: 'Dashboard' }
+    }
   }
 })
 
