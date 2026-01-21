@@ -2755,6 +2755,19 @@ export const useBudgetStore = defineStore('budget', () => {
     }
   }
 
+  async function deleteAllTransactions() {
+    try {
+      const response = await transactionAPI.deleteAll()
+      transactions.value = []
+      transactionsTotal.value = 0
+      await refreshAccountBalances()
+      return response.data
+    } catch (error) {
+      console.error('Failed to delete all transactions:', error)
+      throw error
+    }
+  }
+
   // Quick helper to log a manual expense
   async function logManualExpense(expenseId, amount, date = null, notes = '') {
     const expense = expenses.value.find(e => e.id === expenseId)
@@ -3023,6 +3036,7 @@ export const useBudgetStore = defineStore('budget', () => {
     createTransaction,
     updateTransaction,
     deleteTransaction,
+    deleteAllTransactions,
     logManualExpense,
     addFundsToAccount,
     processDueExpenses,

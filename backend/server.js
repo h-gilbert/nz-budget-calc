@@ -4,11 +4,20 @@ const bodyParser = require('body-parser');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cron = require('node-cron');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const db = require('./database');
 
 const app = express();
 const PORT = process.env.PORT || 3200;
-const JWT_SECRET = process.env.JWT_SECRET || 'budget-calculator-secret-key';
+
+// SECURITY: Require JWT_SECRET to be explicitly set - no fallback
+if (!process.env.JWT_SECRET) {
+    console.error('FATAL: JWT_SECRET environment variable is required');
+    console.error('Set it with: export JWT_SECRET="your-secure-random-secret"');
+    process.exit(1);
+}
+const JWT_SECRET = process.env.JWT_SECRET;
 
 // Helper: Format date as YYYY-MM-DD in local time (not UTC)
 // This avoids timezone bugs where toISOString() shifts dates
@@ -19,9 +28,80 @@ function formatDateLocal(date) {
     return `${year}-${month}-${day}`;
 }
 
+// SECURITY: Audit logging helper
+function auditLog(req, action, success, userId = null, username = null, details = null) {
+    try {
+        const ipAddress = req.ip || req.connection?.remoteAddress || 'unknown';
+        const userAgent = req.get('User-Agent') || 'unknown';
+        db.prepare(`
+            INSERT INTO audit_logs (user_id, username, action, ip_address, user_agent, details, success)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(userId, username, action, ipAddress, userAgent, details, success ? 1 : 0);
+    } catch (error) {
+        console.error('Audit log error:', error);
+    }
+}
+
+// SECURITY: Safe JSON parsing helper to prevent crashes on malformed data
+function safeJsonParse(str, fallback = []) {
+    if (!str) return fallback;
+    try {
+        return JSON.parse(str);
+    } catch (e) {
+        console.error('JSON parse error:', e.message);
+        return fallback;
+    }
+}
+
+// SECURITY: Rate limiting for authentication endpoints
+const authLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 5, // 5 attempts per window
+    message: { error: 'Too many authentication attempts, please try again later' },
+    standardHeaders: true,
+    legacyHeaders: false
+});
+
+// SECURITY: General API rate limiting
+const apiLimiter = rateLimit({
+    windowMs: 60 * 1000, // 1 minute
+    max: 100, // 100 requests per minute
+    message: { error: 'Too many requests, please slow down' },
+    standardHeaders: true,
+    legacyHeaders: false
+});
+
 // Middleware
-app.use(cors());
-app.use(bodyParser.json());
+// SECURITY: Helmet adds various HTTP headers for protection
+app.use(helmet());
+
+// SECURITY: CORS restricted to specific origins
+const allowedOrigins = [
+    process.env.FRONTEND_URL,
+    'http://localhost:8000',
+    'http://127.0.0.1:8000'
+].filter(Boolean);
+
+app.use(cors({
+    origin: function (origin, callback) {
+        // Allow requests with no origin (mobile apps, curl, etc) in development only
+        if (!origin && process.env.NODE_ENV !== 'production') {
+            return callback(null, true);
+        }
+        if (allowedOrigins.includes(origin)) {
+            return callback(null, true);
+        }
+        return callback(new Error('Not allowed by CORS'));
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
+// Apply general rate limiting to all API routes
+app.use('/api/', apiLimiter);
+
+app.use(bodyParser.json({ limit: '1mb' })); // Limit body size
 
 // Health check endpoint (no authentication required)
 app.get('/health', (req, res) => {
@@ -53,12 +133,26 @@ function authenticateToken(req, res, next) {
 }
 
 // Register endpoint
-app.post('/api/register', async (req, res) => {
+app.post('/api/register', authLimiter, async (req, res) => {
     try {
         const { username, password } = req.body;
 
         if (!username || !password) {
             return res.status(400).json({ error: 'Username and password are required' });
+        }
+
+        // SECURITY: Input validation
+        if (username.length < 3 || username.length > 50) {
+            return res.status(400).json({ error: 'Username must be 3-50 characters' });
+        }
+        if (!/^[a-zA-Z0-9_-]+$/.test(username)) {
+            return res.status(400).json({ error: 'Username can only contain letters, numbers, underscores, and hyphens' });
+        }
+        if (password.length < 12) {
+            return res.status(400).json({ error: 'Password must be at least 12 characters' });
+        }
+        if (password.length > 256) {
+            return res.status(400).json({ error: 'Password is too long' });
         }
 
         // Check if user already exists
@@ -79,9 +173,10 @@ app.post('/api/register', async (req, res) => {
         const token = jwt.sign(
             { userId: result.lastInsertRowid, username },
             JWT_SECRET,
-            { expiresIn: '7d' }
+            { expiresIn: '24h' }
         );
 
+        auditLog(req, 'REGISTER', true, result.lastInsertRowid, username);
         res.status(201).json({
             message: 'User registered successfully',
             token,
@@ -89,12 +184,13 @@ app.post('/api/register', async (req, res) => {
         });
     } catch (error) {
         console.error('Registration error:', error);
+        auditLog(req, 'REGISTER', false, null, req.body?.username, error.message);
         res.status(500).json({ error: 'Server error during registration' });
     }
 });
 
 // Login endpoint
-app.post('/api/login', async (req, res) => {
+app.post('/api/login', authLimiter, async (req, res) => {
     try {
         const { username, password } = req.body;
 
@@ -104,23 +200,26 @@ app.post('/api/login', async (req, res) => {
 
         // Get user
         const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
-        if (!user) {
-            return res.status(401).json({ error: 'Invalid username or password' });
-        }
 
-        // Verify password
-        const passwordMatch = await bcrypt.compare(password, user.password);
-        if (!passwordMatch) {
-            return res.status(401).json({ error: 'Invalid username or password' });
+        // SECURITY: Prevent timing attacks / username enumeration
+        // Always perform password comparison even if user doesn't exist
+        const dummyHash = '$2a$10$N9qo8uLOickgx2ZMRZoMye.IjqQBrkHx28nMo/DUMMY_HASH_FOR_TIMING';
+        const passwordToCompare = user ? user.password : dummyHash;
+        const passwordMatch = await bcrypt.compare(password, passwordToCompare);
+
+        if (!user || !passwordMatch) {
+            auditLog(req, 'LOGIN_FAILED', false, user?.id, username, 'Invalid credentials');
+            return res.status(401).json({ error: 'Invalid credentials' });
         }
 
         // Generate token
         const token = jwt.sign(
             { userId: user.id, username: user.username },
             JWT_SECRET,
-            { expiresIn: '7d' }
+            { expiresIn: '24h' }
         );
 
+        auditLog(req, 'LOGIN', true, user.id, user.username);
         res.json({
             message: 'Login successful',
             token,
@@ -128,6 +227,7 @@ app.post('/api/login', async (req, res) => {
         });
     } catch (error) {
         console.error('Login error:', error);
+        auditLog(req, 'LOGIN', false, null, req.body?.username, error.message);
         res.status(500).json({ error: 'Server error during login' });
     }
 });
@@ -142,8 +242,11 @@ app.post('/api/change-password', authenticateToken, async (req, res) => {
             return res.status(400).json({ error: 'Current password and new password are required' });
         }
 
-        if (newPassword.length < 6) {
-            return res.status(400).json({ error: 'New password must be at least 6 characters' });
+        if (newPassword.length < 12) {
+            return res.status(400).json({ error: 'New password must be at least 12 characters' });
+        }
+        if (newPassword.length > 256) {
+            return res.status(400).json({ error: 'Password is too long' });
         }
 
         // Get user's current password hash
@@ -155,6 +258,7 @@ app.post('/api/change-password', authenticateToken, async (req, res) => {
         // Verify current password
         const passwordMatch = await bcrypt.compare(currentPassword, user.password);
         if (!passwordMatch) {
+            auditLog(req, 'PASSWORD_CHANGE_FAILED', false, userId, req.user.username, 'Incorrect current password');
             return res.status(401).json({ error: 'Current password is incorrect' });
         }
 
@@ -164,9 +268,11 @@ app.post('/api/change-password', authenticateToken, async (req, res) => {
         // Update password
         db.prepare('UPDATE users SET password = ? WHERE id = ?').run(hashedPassword, userId);
 
+        auditLog(req, 'PASSWORD_CHANGE', true, userId, req.user.username);
         res.json({ message: 'Password changed successfully' });
     } catch (error) {
         console.error('Change password error:', error);
+        auditLog(req, 'PASSWORD_CHANGE', false, req.user?.userId, req.user?.username, error.message);
         res.status(500).json({ error: 'Server error during password change' });
     }
 });
@@ -378,10 +484,10 @@ app.get('/api/budget/load/:id?', authenticateToken, (req, res) => {
             return res.status(404).json({ error: 'No saved budget data found' });
         }
 
-        // Parse expenses, expense groups, and accounts JSON
-        const expenses = budgetData.expenses ? JSON.parse(budgetData.expenses) : [];
-        const expenseGroups = budgetData.expense_groups ? JSON.parse(budgetData.expense_groups) : [];
-        const accountsFromJson = budgetData.accounts ? JSON.parse(budgetData.accounts) : [];
+        // Parse expenses, expense groups, and accounts JSON (with safe parsing)
+        const expenses = safeJsonParse(budgetData.expenses, []);
+        const expenseGroups = safeJsonParse(budgetData.expense_groups, []);
+        const accountsFromJson = safeJsonParse(budgetData.accounts, []);
 
         // Fetch live account balances from the accounts table
         const dbAccounts = db.prepare(`
@@ -1880,6 +1986,55 @@ app.delete('/api/transactions/:id', authenticateToken, (req, res) => {
     }
 });
 
+// Delete all transactions for user
+app.delete('/api/transactions', authenticateToken, (req, res) => {
+    try {
+        const userId = req.user.userId;
+
+        // Get completed transactions with accounts for balance reversal
+        const completedTransactions = db.prepare(`
+            SELECT id, account_id, transaction_type, amount
+            FROM transactions
+            WHERE user_id = ? AND status = 'completed' AND account_id IS NOT NULL
+        `).all(userId);
+
+        // Calculate net balance adjustments per account
+        const accountAdjustments = {};
+        for (const txn of completedTransactions) {
+            if (!accountAdjustments[txn.account_id]) {
+                accountAdjustments[txn.account_id] = 0;
+            }
+            // Reverse: income subtracts, expense/withdrawal adds
+            const reversal = txn.transaction_type === 'income'
+                ? -txn.amount
+                : txn.amount;
+            accountAdjustments[txn.account_id] += reversal;
+        }
+
+        // Atomic transaction
+        const deleteAllTransactions = db.transaction(() => {
+            // Apply balance reversals
+            for (const [accountId, adjustment] of Object.entries(accountAdjustments)) {
+                db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ? AND user_id = ?')
+                    .run(adjustment, accountId, userId);
+            }
+            // Delete all transactions
+            return db.prepare('DELETE FROM transactions WHERE user_id = ?').run(userId).changes;
+        });
+
+        const deletedCount = deleteAllTransactions();
+
+        res.json({
+            message: 'All transactions deleted successfully',
+            deleted_count: deletedCount,
+            balances_reversed: completedTransactions.length
+        });
+    } catch (error) {
+        console.error('Delete all transactions error:', error);
+        res.status(500).json({ error: 'Server error deleting transactions' });
+    }
+});
+
 // ============================================
 // INTERNAL PROCESSING FUNCTIONS (for scheduler and endpoints)
 // ============================================
@@ -2706,7 +2861,7 @@ app.get('/api/admin/scheduler/status', authenticateToken, (req, res) => {
             timezone: 'Pacific/Auckland',
             recentRuns: recentRuns.map(run => ({
                 ...run,
-                error_details: run.error_details ? JSON.parse(run.error_details) : null
+                error_details: safeJsonParse(run.error_details, null)
             }))
         });
     } catch (error) {

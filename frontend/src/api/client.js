@@ -202,6 +202,10 @@ export const transactionAPI = {
     return apiClient.delete(`/transactions/${id}`)
   },
 
+  async deleteAll() {
+    return apiClient.delete('/transactions')
+  },
+
   async processDue() {
     return apiClient.post('/transactions/process-due')
   }
