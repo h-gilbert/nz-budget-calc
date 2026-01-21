@@ -138,6 +138,21 @@
                     </svg>
                     Change Password
                   </button>
+                  <button
+                    v-if="!isDemoMode"
+                    @click="handleClearHistory"
+                    class="w-full px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                  >
+                    <svg
+                      class="w-4 h-4 text-gray-400"
+                      xmlns="http://www.w3.org/2000/svg"
+                      viewBox="0 0 20 20"
+                      fill="currentColor"
+                    >
+                      <path fill-rule="evenodd" d="M8.75 1A2.75 2.75 0 006 3.75v.443c-.795.077-1.584.176-2.365.298a.75.75 0 10.23 1.482l.149-.022.841 10.518A2.75 2.75 0 007.596 19h4.807a2.75 2.75 0 002.742-2.53l.841-10.519.149.023a.75.75 0 00.23-1.482A41.03 41.03 0 0014 4.193V3.75A2.75 2.75 0 0011.25 1h-2.5z" clip-rule="evenodd" />
+                    </svg>
+                    Clear History
+                  </button>
                   <hr v-if="!isDemoMode" class="my-2 border-gray-100" />
                   <button
                     @click="handleLogout"
@@ -305,6 +320,16 @@
                     Change Password
                   </button>
                   <button
+                    v-if="!isDemoMode"
+                    @click="handleMobileClearHistory"
+                    class="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-base font-medium text-gray-600 hover:bg-gray-100 transition-colors"
+                  >
+                    <svg class="w-5 h-5 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                      <path fill-rule="evenodd" d="M8.75 1A2.75 2.75 0 006 3.75v.443c-.795.077-1.584.176-2.365.298a.75.75 0 10.23 1.482l.149-.022.841 10.518A2.75 2.75 0 007.596 19h4.807a2.75 2.75 0 002.742-2.53l.841-10.519.149.023a.75.75 0 00.23-1.482A41.03 41.03 0 0014 4.193V3.75A2.75 2.75 0 0011.25 1h-2.5z" clip-rule="evenodd" />
+                    </svg>
+                    Clear History
+                  </button>
+                  <button
                     @click="handleMobileLogout"
                     class="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-base font-medium text-red-600 hover:bg-red-50 transition-colors"
                   >
@@ -330,6 +355,52 @@
               </div>
             </nav>
           </Transition>
+        </div>
+      </Transition>
+    </Teleport>
+
+    <!-- Clear History Confirmation Modal -->
+    <Teleport to="body">
+      <Transition name="modal">
+        <div
+          v-if="showClearHistoryModal"
+          class="fixed inset-0 z-[200] flex items-center justify-center p-4"
+        >
+          <div class="absolute inset-0 bg-black/50 backdrop-blur-sm" @click="closeClearHistoryModal" />
+          <div class="relative w-full max-w-md bg-white rounded-3xl shadow-xl p-6">
+            <h3 class="text-lg font-semibold text-slate-800 mb-2">Clear Transaction History?</h3>
+            <p class="text-sm text-slate-600 mb-4">
+              This will permanently delete <strong>{{ budgetStore.transactionsTotal }}</strong> transactions
+              and reverse all balance changes. This cannot be undone.
+            </p>
+            <div class="mb-6">
+              <label class="block text-sm font-medium text-slate-700 mb-2">
+                Type <span class="font-mono bg-slate-100 px-1.5 py-0.5 rounded text-red-600">DELETE</span> to confirm:
+              </label>
+              <input
+                v-model="clearHistoryConfirmText"
+                type="text"
+                class="w-full px-4 py-3 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-red-500/20"
+                placeholder="Type DELETE here"
+                autocomplete="off"
+              />
+            </div>
+            <div class="flex gap-3">
+              <button
+                @click="closeClearHistoryModal"
+                class="flex-1 px-4 py-3 font-medium text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                @click="confirmClearHistory"
+                :disabled="clearHistoryConfirmText !== 'DELETE' || clearingHistory"
+                class="flex-1 px-4 py-3 font-medium text-white bg-red-600 hover:bg-red-700 rounded-xl transition-colors disabled:opacity-50"
+              >
+                {{ clearingHistory ? 'Clearing...' : 'Clear History' }}
+              </button>
+            </div>
+          </div>
         </div>
       </Transition>
     </Teleport>
@@ -359,6 +430,9 @@ const displayUsername = computed(() => isDemoMode.value ? 'Demo' : username.valu
 const showMenu = ref(false)
 const showMobileMenu = ref(false)
 const menuRef = ref(null)
+const showClearHistoryModal = ref(false)
+const clearHistoryConfirmText = ref('')
+const clearingHistory = ref(false)
 
 // Close mobile menu on route change
 watch(() => route.path, () => {
@@ -411,6 +485,36 @@ function handleMobileChangePassword() {
   emit('openPasswordChange')
 }
 
+// Clear history handlers
+function handleClearHistory() {
+  showMenu.value = false
+  showClearHistoryModal.value = true
+}
+
+function handleMobileClearHistory() {
+  showMobileMenu.value = false
+  showClearHistoryModal.value = true
+}
+
+function closeClearHistoryModal() {
+  showClearHistoryModal.value = false
+  clearHistoryConfirmText.value = ''
+}
+
+async function confirmClearHistory() {
+  if (clearHistoryConfirmText.value !== 'DELETE') return
+  clearingHistory.value = true
+  try {
+    await budgetStore.deleteAllTransactions()
+    closeClearHistoryModal()
+  } catch (error) {
+    console.error('Failed to clear history:', error)
+    alert('Failed to clear history: ' + error.message)
+  } finally {
+    clearingHistory.value = false
+  }
+}
+
 // Close menu when clicking outside
 function handleClickOutside(event) {
   if (menuRef.value && !menuRef.value.contains(event.target)) {
@@ -461,5 +565,16 @@ onUnmounted(() => {
 .slide-in-enter-from,
 .slide-in-leave-to {
   transform: translateX(-100%);
+}
+
+/* Modal transitions */
+.modal-enter-active,
+.modal-leave-active {
+  transition: opacity 0.2s ease;
+}
+
+.modal-enter-from,
+.modal-leave-to {
+  opacity: 0;
 }
 </style>

@@ -38,15 +38,6 @@
               <span class="hidden sm:inline">{{ processingDue ? 'Processing...' : 'Process Expenses' }}</span>
               <span class="sm:hidden">{{ processingDue ? '...' : 'Expenses' }}</span>
             </button>
-            <button
-              @click="showDeleteAllConfirm = true"
-              class="px-3 py-2 text-sm font-medium text-red-600 bg-white hover:bg-red-50 border border-red-200 rounded-xl transition-colors"
-              title="Delete all transactions"
-            >
-              <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
-                <path fill-rule="evenodd" d="M8.75 1A2.75 2.75 0 006 3.75v.443c-.795.077-1.584.176-2.365.298a.75.75 0 10.23 1.482l.149-.022.841 10.518A2.75 2.75 0 007.596 19h4.807a2.75 2.75 0 002.742-2.53l.841-10.519.149.023a.75.75 0 00.23-1.482A41.03 41.03 0 0014 4.193V3.75A2.75 2.75 0 0011.25 1h-2.5z" clip-rule="evenodd" />
-              </svg>
-            </button>
           </div>
         </div>
       </div>
@@ -242,52 +233,6 @@
         </div>
       </Transition>
     </Teleport>
-
-    <!-- Delete All Confirmation -->
-    <Teleport to="body">
-      <Transition name="modal">
-        <div
-          v-if="showDeleteAllConfirm"
-          class="fixed inset-0 z-50 flex items-center justify-center p-4"
-        >
-          <div class="absolute inset-0 bg-black/50 backdrop-blur-sm" @click="closeDeleteAllModal" />
-          <div class="relative w-full max-w-md bg-white rounded-3xl shadow-xl p-6">
-            <h3 class="text-lg font-semibold text-slate-800 mb-2">Delete All Transactions?</h3>
-            <p class="text-sm text-slate-600 mb-4">
-              This will permanently delete <strong>{{ budgetStore.transactionsTotal }}</strong> transactions
-              and reverse all balance changes. This cannot be undone.
-            </p>
-            <div class="mb-6">
-              <label class="block text-sm font-medium text-slate-700 mb-2">
-                Type <span class="font-mono bg-slate-100 px-1.5 py-0.5 rounded text-red-600">DELETE</span> to confirm:
-              </label>
-              <input
-                v-model="deleteConfirmText"
-                type="text"
-                class="w-full px-4 py-3 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-red-500/20"
-                placeholder="Type DELETE here"
-                autocomplete="off"
-              />
-            </div>
-            <div class="flex gap-3">
-              <button
-                @click="closeDeleteAllModal"
-                class="flex-1 px-4 py-3 font-medium text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                @click="confirmDeleteAll"
-                :disabled="deleteConfirmText !== 'DELETE' || deletingAll"
-                class="flex-1 px-4 py-3 font-medium text-white bg-red-600 hover:bg-red-700 rounded-xl transition-colors disabled:opacity-50"
-              >
-                {{ deletingAll ? 'Deleting...' : 'Delete All' }}
-              </button>
-            </div>
-          </div>
-        </div>
-      </Transition>
-    </Teleport>
   </div>
 </template>
 
@@ -324,9 +269,6 @@ const showLumpSumTransferModal = ref(false)
 const showEarlyPaymentModal = ref(false)
 const showEditModal = ref(false)
 const showDeleteConfirm = ref(false)
-const showDeleteAllConfirm = ref(false)
-const deleteConfirmText = ref('')
-const deletingAll = ref(false)
 const editingTransaction = ref(null)
 const deletingTransaction = ref(null)
 const selectedExpenseForPayment = ref(null)
@@ -473,28 +415,6 @@ async function confirmDelete() {
   } catch (error) {
     console.error('Failed to delete transaction:', error)
     alert('Failed to delete transaction: ' + error.message)
-  }
-}
-
-// Close delete all modal
-function closeDeleteAllModal() {
-  showDeleteAllConfirm.value = false
-  deleteConfirmText.value = ''
-}
-
-// Confirm delete all transactions
-async function confirmDeleteAll() {
-  if (deleteConfirmText.value !== 'DELETE') return
-  deletingAll.value = true
-  try {
-    await budgetStore.deleteAllTransactions()
-    closeDeleteAllModal()
-    await loadBudgetSummary()
-  } catch (error) {
-    console.error('Failed to delete all transactions:', error)
-    alert('Failed to delete transactions: ' + error.message)
-  } finally {
-    deletingAll.value = false
   }
 }
 
