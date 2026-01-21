@@ -224,7 +224,8 @@ app.post('/api/login', authLimiter, async (req, res) => {
         res.json({
             message: 'Login successful',
             token,
-            user: { id: user.id, username: user.username }
+            user: { id: user.id, username: user.username },
+            preferences: { budget_mode: user.budget_mode || 'simple' }
         });
     } catch (error) {
         console.error('Login error:', error);
@@ -547,16 +548,49 @@ app.get('/api/budget/load/:id?', authenticateToken, (req, res) => {
 app.get('/api/verify', authenticateToken, (req, res) => {
     try {
         const { userId } = req.user;
-        const user = db.prepare('SELECT id, username FROM users WHERE id = ?').get(userId);
+        const user = db.prepare('SELECT id, username, budget_mode FROM users WHERE id = ?').get(userId);
 
         if (!user) {
             return res.status(404).json({ error: 'User not found' });
         }
 
-        res.json({ user });
+        res.json({
+            user: {
+                id: user.id,
+                username: user.username
+            },
+            preferences: {
+                budget_mode: user.budget_mode || 'simple'
+            }
+        });
     } catch (error) {
         console.error('Verify token error:', error);
         res.status(500).json({ error: 'Server error during token verification' });
+    }
+});
+
+// Update user preferences
+app.put('/api/preferences', authenticateToken, (req, res) => {
+    try {
+        const { userId } = req.user;
+        const { budget_mode } = req.body;
+
+        // Validate budget_mode
+        if (budget_mode && !['simple', 'advanced'].includes(budget_mode)) {
+            return res.status(400).json({ error: 'Invalid budget_mode value' });
+        }
+
+        if (budget_mode) {
+            db.prepare('UPDATE users SET budget_mode = ? WHERE id = ?').run(budget_mode, userId);
+        }
+
+        res.json({
+            message: 'Preferences updated',
+            preferences: { budget_mode: budget_mode || 'simple' }
+        });
+    } catch (error) {
+        console.error('Update preferences error:', error);
+        res.status(500).json({ error: 'Server error updating preferences' });
     }
 });
 

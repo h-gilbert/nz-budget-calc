@@ -73,6 +73,10 @@ onMounted(async () => {
       const userData = await authAPI.getCurrentUser()
       if (userData?.user) {
         userStore.login(userData.user, token)
+        // Apply budget mode preference if available
+        if (userData.preferences?.budget_mode) {
+          budgetStore.budgetMode = userData.preferences.budget_mode
+        }
         budgetStore.clearLocalStorage()
         // Auto-load the user's default budget on page refresh
         await loadUserBudget()

@@ -71,6 +71,16 @@ export const authAPI = {
 }
 
 // ============================================
+// USER PREFERENCES API
+// ============================================
+
+export const preferencesAPI = {
+  async update(preferences) {
+    return apiClient.put('/preferences', preferences)
+  }
+}
+
+// ============================================
 // BUDGET API
 // ============================================
 

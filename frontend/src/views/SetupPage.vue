@@ -43,6 +43,8 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { useBudgetStore } from '@/stores/budget'
+import { useUserStore } from '@/stores/user'
+import { preferencesAPI } from '@/api/client'
 import AppTabs from '@/components/common/AppTabs.vue'
 import IncomeTab from '@/components/setup/IncomeTab.vue'
 import ExpensesTab from '@/components/setup/ExpensesTab.vue'
@@ -52,6 +54,7 @@ import ResultsSidebar from '@/components/results/ResultsSidebar.vue'
 defineEmits(['openLogin'])
 
 const budgetStore = useBudgetStore()
+const userStore = useUserStore()
 const activeTab = ref('income')
 
 const tabs = computed(() => {
@@ -68,11 +71,22 @@ const tabs = computed(() => {
   return baseTabs
 })
 
-function toggleMode() {
-  budgetStore.budgetMode = budgetStore.budgetMode === 'simple' ? 'advanced' : 'simple'
+async function toggleMode() {
+  const newMode = budgetStore.budgetMode === 'simple' ? 'advanced' : 'simple'
+  budgetStore.budgetMode = newMode
+
   // If switching to simple mode and on accounts tab, switch to income
-  if (budgetStore.budgetMode === 'simple' && activeTab.value === 'accounts') {
+  if (newMode === 'simple' && activeTab.value === 'accounts') {
     activeTab.value = 'income'
+  }
+
+  // Save preference to server if logged in
+  if (userStore.isAuthenticated) {
+    try {
+      await preferencesAPI.update({ budget_mode: newMode })
+    } catch (error) {
+      console.error('Failed to save budget mode preference:', error)
+    }
   }
 }
 </script>

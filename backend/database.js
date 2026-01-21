@@ -94,6 +94,18 @@ function initializeDatabase() {
         console.error('Migration error:', error);
     }
 
+    // Migration: Add budget_mode to users table if it doesn't exist
+    try {
+        const usersTableInfo = db.prepare("PRAGMA table_info(users)").all();
+        if (!usersTableInfo.some(col => col.name === 'budget_mode')) {
+            console.log('Adding budget_mode column to users table...');
+            db.exec(`ALTER TABLE users ADD COLUMN budget_mode TEXT DEFAULT 'simple'`);
+            console.log('✓ budget_mode column added');
+        }
+    } catch (error) {
+        console.error('Users table migration error:', error);
+    }
+
     // Accounts table
     db.exec(`
         CREATE TABLE IF NOT EXISTS accounts (
@@ -515,6 +527,22 @@ function initializeDatabase() {
         )
     `);
 
+    // SECURITY: Audit logs table - tracks authentication and security events
+    db.exec(`
+        CREATE TABLE IF NOT EXISTS audit_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            username TEXT,
+            action TEXT NOT NULL,
+            ip_address TEXT,
+            user_agent TEXT,
+            details TEXT,
+            success BOOLEAN DEFAULT 1,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+        )
+    `);
+
     // Create indexes
     db.exec(`
         CREATE INDEX IF NOT EXISTS idx_accounts_user_id ON accounts(user_id);
@@ -539,6 +567,9 @@ function initializeDatabase() {
         CREATE INDEX IF NOT EXISTS idx_expense_auto_payments_expense_id ON expense_auto_payments(expense_id);
         CREATE INDEX IF NOT EXISTS idx_scheduler_runs_run_date ON scheduler_runs(run_date);
         CREATE INDEX IF NOT EXISTS idx_scheduler_runs_status ON scheduler_runs(status);
+        CREATE INDEX IF NOT EXISTS idx_audit_logs_user_id ON audit_logs(user_id);
+        CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action);
+        CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at);
     `);
 
     console.log('Database initialized successfully');

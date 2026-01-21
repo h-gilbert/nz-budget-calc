@@ -42,6 +42,7 @@
           label="Password"
           placeholder="Enter your password"
           required
+          :hint="activeTab === 'register' ? 'Must be at least 12 characters' : undefined"
           :error="fieldErrors.password"
         />
 
@@ -70,6 +71,7 @@
 <script setup>
 import { ref, computed, watch } from 'vue'
 import { useUserStore } from '@/stores/user'
+import { useBudgetStore } from '@/stores/budget'
 import { authAPI } from '@/api/client'
 import AppModal from '@/components/common/AppModal.vue'
 import AppInput from '@/components/common/AppInput.vue'
@@ -82,6 +84,7 @@ const props = defineProps({
 const emit = defineEmits(['update:modelValue', 'loginSuccess'])
 
 const userStore = useUserStore()
+const budgetStore = useBudgetStore()
 
 const isOpen = computed({
   get: () => props.modelValue,
@@ -121,8 +124,8 @@ async function handleSubmit() {
   }
 
   if (activeTab.value === 'register') {
-    if (password.value.length < 6) {
-      fieldErrors.value.password = 'Password must be at least 6 characters'
+    if (password.value.length < 12) {
+      fieldErrors.value.password = 'Password must be at least 12 characters'
       return
     }
     if (password.value !== confirmPassword.value) {
@@ -143,6 +146,10 @@ async function handleSubmit() {
 
     if (response?.token && response?.user) {
       userStore.login(response.user, response.token)
+      // Apply budget mode preference if available
+      if (response.preferences?.budget_mode) {
+        budgetStore.budgetMode = response.preferences.budget_mode
+      }
       emit('loginSuccess')
       isOpen.value = false
     }

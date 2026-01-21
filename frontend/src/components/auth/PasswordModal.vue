@@ -34,7 +34,7 @@
           label="New Password"
           placeholder="Enter your new password"
           required
-          hint="Must be at least 6 characters"
+          hint="Must be at least 12 characters"
           :error="fieldErrors.newPassword"
         />
 
@@ -122,8 +122,8 @@ async function handleSubmit() {
     return
   }
 
-  if (newPassword.value.length < 6) {
-    fieldErrors.value.newPassword = 'Password must be at least 6 characters'
+  if (newPassword.value.length < 12) {
+    fieldErrors.value.newPassword = 'Password must be at least 12 characters'
     return
   }
 
