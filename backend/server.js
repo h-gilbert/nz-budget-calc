@@ -84,8 +84,9 @@ const allowedOrigins = [
 
 app.use(cors({
     origin: function (origin, callback) {
-        // Allow requests with no origin (mobile apps, curl, etc) in development only
-        if (!origin && process.env.NODE_ENV !== 'production') {
+        // Allow requests with no origin (server-side requests, curl, health checks)
+        // Browsers always send Origin headers for cross-origin requests, so this is safe
+        if (!origin) {
             return callback(null, true);
         }
         if (allowedOrigins.includes(origin)) {
