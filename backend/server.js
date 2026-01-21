@@ -1987,7 +1987,7 @@ app.delete('/api/transactions/:id', authenticateToken, (req, res) => {
     }
 });
 
-// Delete all transactions for user
+// Delete all transactions and transfers for user (Clear History)
 app.delete('/api/transactions', authenticateToken, (req, res) => {
     try {
         const userId = req.user.userId;
@@ -1999,8 +1999,17 @@ app.delete('/api/transactions', authenticateToken, (req, res) => {
             WHERE user_id = ? AND status = 'completed' AND account_id IS NOT NULL
         `).all(userId);
 
+        // Get executed transfers for balance reversal
+        const executedTransfers = db.prepare(`
+            SELECT id, from_account_id, to_account_id, amount
+            FROM transfers
+            WHERE user_id = ? AND status = 'executed'
+        `).all(userId);
+
         // Calculate net balance adjustments per account
         const accountAdjustments = {};
+
+        // Reverse transactions
         for (const txn of completedTransactions) {
             if (!accountAdjustments[txn.account_id]) {
                 accountAdjustments[txn.account_id] = 0;
@@ -2012,27 +2021,45 @@ app.delete('/api/transactions', authenticateToken, (req, res) => {
             accountAdjustments[txn.account_id] += reversal;
         }
 
+        // Reverse transfers (add back to source, subtract from destination)
+        for (const transfer of executedTransfers) {
+            if (transfer.from_account_id) {
+                if (!accountAdjustments[transfer.from_account_id]) {
+                    accountAdjustments[transfer.from_account_id] = 0;
+                }
+                accountAdjustments[transfer.from_account_id] += transfer.amount; // Add back
+            }
+            if (!accountAdjustments[transfer.to_account_id]) {
+                accountAdjustments[transfer.to_account_id] = 0;
+            }
+            accountAdjustments[transfer.to_account_id] -= transfer.amount; // Subtract
+        }
+
         // Atomic transaction
-        const deleteAllTransactions = db.transaction(() => {
+        const deleteAllHistory = db.transaction(() => {
             // Apply balance reversals
             for (const [accountId, adjustment] of Object.entries(accountAdjustments)) {
                 db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ? AND user_id = ?')
                     .run(adjustment, accountId, userId);
             }
             // Delete all transactions
-            return db.prepare('DELETE FROM transactions WHERE user_id = ?').run(userId).changes;
+            const deletedTransactions = db.prepare('DELETE FROM transactions WHERE user_id = ?').run(userId).changes;
+            // Delete all transfers
+            const deletedTransfers = db.prepare('DELETE FROM transfers WHERE user_id = ?').run(userId).changes;
+            return { deletedTransactions, deletedTransfers };
         });
 
-        const deletedCount = deleteAllTransactions();
+        const result = deleteAllHistory();
 
         res.json({
-            message: 'All transactions deleted successfully',
-            deleted_count: deletedCount,
-            balances_reversed: completedTransactions.length
+            message: 'All history deleted successfully',
+            deleted_transactions: result.deletedTransactions,
+            deleted_transfers: result.deletedTransfers,
+            balances_reversed: completedTransactions.length + executedTransfers.length
         });
     } catch (error) {
-        console.error('Delete all transactions error:', error);
-        res.status(500).json({ error: 'Server error deleting transactions' });
+        console.error('Delete all history error:', error);
+        res.status(500).json({ error: 'Server error deleting history' });
     }
 });
 

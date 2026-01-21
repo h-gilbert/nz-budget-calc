@@ -2760,7 +2760,9 @@ export const useBudgetStore = defineStore('budget', () => {
       const response = await transactionAPI.deleteAll()
       transactions.value = []
       transactionsTotal.value = 0
+      upcomingItems.value = []
       await refreshAccountBalances()
+      await loadUpcoming()
       return response.data
     } catch (error) {
       console.error('Failed to delete all transactions:', error)
