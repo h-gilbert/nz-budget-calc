@@ -2006,8 +2006,8 @@ export const useBudgetStore = defineStore('budget', () => {
   // to show week-by-week when expenses spike above equilibrium
   // Now includes equilibrium calculation and acceleration cutoff
   function calculateUnifiedExpenseProjection(weeksToProject = 52) {
-    const today = new Date()
-    today.setHours(0, 0, 0, 0)
+    // Anchor to Monday of current week for stable weekly boundaries
+    const today = getMonday(new Date())
 
     // Get all expenses grouped by account
     const allExpenses = expenses.value
@@ -2287,8 +2287,8 @@ export const useBudgetStore = defineStore('budget', () => {
   // This calculates the minimum one-time transfer needed so that equilibrium-only
   // weekly transfers will sustain the account forever (balance never goes negative)
   function calculateCatchupLumpSum(weeksToProject = 104) {
-    const today = new Date()
-    today.setHours(0, 0, 0, 0)
+    // Anchor to Monday of current week for stable weekly boundaries
+    const today = getMonday(new Date())
 
     const allExpenses = expenses.value
     const accountGroups = {}
@@ -2413,8 +2413,8 @@ export const useBudgetStore = defineStore('budget', () => {
   // These expenses are "lumpy" within a month - we need enough buffer to handle
   // weeks where multiple expenses cluster together
   function calculateRegularExpenseBuffer() {
-    const today = new Date()
-    today.setHours(0, 0, 0, 0)
+    // Anchor to Monday of current week for stable weekly boundaries
+    const today = getMonday(new Date())
 
     // Get regular expenses (weekly, fortnightly, monthly)
     const regularExpenses = getRegularExpenses()
